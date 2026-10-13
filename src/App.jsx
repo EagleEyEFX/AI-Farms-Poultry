@@ -147,6 +147,7 @@ function fieldSoilDefaults() {
 
 function defaultPepper() {
   return {
+    enterpriseName: 'Bell Pepper Fields', // user-editable enterprise label
     fields: [
       { id: 'A', name: 'Field A', variety: '', transplantDate: '', plantCount: null, spacing: '', expectedHarvestDAT: 70, setupCost: null, notes: '', sprayProgramme: { events: [] }, ...fieldSoilDefaults() },
       { id: 'B', name: 'Field B', variety: '', transplantDate: '', plantCount: null, spacing: '', expectedHarvestDAT: 70, setupCost: null, notes: '', sprayProgramme: { events: [] }, ...fieldSoilDefaults() },
@@ -2546,6 +2547,9 @@ function AppInner({ profileId, profileName, farmName, onSwitchProfile }) {
       return touch({ ...d, pepper: { ...d.pepper, fields: d.pepper.fields.filter((f) => f.id !== id) } });
     });
   }
+  function updatePepperEnterpriseName(name) {
+    setData((d) => touch({ ...d, pepper: { ...d.pepper, enterpriseName: name || 'Crops' } }));
+  }
   function addManureReading(entry) {
     setData((d) => touch({ ...d, pepper: { ...d.pepper, manureReadings: [...(d.pepper.manureReadings || []), entry] } }));
   }
@@ -2721,7 +2725,7 @@ function AppInner({ profileId, profileName, farmName, onSwitchProfile }) {
         <button
           className={`ws-btn${workspace === 'pepper' ? ' active pepper' : ''}`}
           onClick={() => { setWorkspace('pepper'); setModal(null); }}
-        >Bell Pepper Fields</button>
+        >{(data.pepper?.enterpriseName) || 'Bell Pepper Fields'}</button>
         <button
           className={`ws-btn${workspace === 'goats' ? ' active goats' : ''}`}
           onClick={() => { setWorkspace('goats'); setModal(null); }}
@@ -3320,6 +3324,8 @@ function AppInner({ profileId, profileName, farmName, onSwitchProfile }) {
           reminders={data.reminders || []}
           expenses={data.expenses || []}
           onUpdateField={updateField}
+          onRenameField={(id, name) => updateField(id, { name })}
+          onRenameEnterprise={updatePepperEnterpriseName}
           onAddField={addPepperField}
           onDeleteField={deletePepperField}
           onAddScouting={addScouting}
@@ -4981,7 +4987,7 @@ function nurseryStatus(batch, asOf = todayISO()) {
 }
 
 function PepperWorkspace({
-  pepper, farmProfile, reminders, expenses, onUpdateField, onAddField, onDeleteField, onAddScouting, onAddSpray, onAddHarvest,
+  pepper, farmProfile, reminders, expenses, onUpdateField, onRenameField, onRenameEnterprise, onAddField, onDeleteField, onAddScouting, onAddSpray, onAddHarvest,
   onAddInput, onUpdateInput, onDeleteInput, onAddReminder, onToggleReminder, onDeleteReminder,
   onAddManureReading, onDeleteManureReading, onAddSoilReading, onDeleteSoilReading,
   onStartNewBatch, onDeleteBatch,
@@ -4994,8 +5000,13 @@ function PepperWorkspace({
   const [scope, setScope] = useState('all');   // 'all' | any field id
   const [modal, setModal] = useState(null);      // 'field:A' | 'scout' | 'spray' | 'harvest' | 'manure' | 'soil' | 'batch:A'
   const [sprayPrefill, setSprayPrefill] = useState(null); // pre-fill data when opening SprayForm from the programme
+  const [editingEnterpriseName, setEditingEnterpriseName] = useState(false);
+  const [enterpriseNameDraft, setEnterpriseDraft] = useState('');
+  const [editingFieldId, setEditingFieldId] = useState(null); // which field name is being renamed inline
+  const [fieldNameDraft, setFieldNameDraft] = useState('');
 
   const fields = pepper.fields;
+  const enterpriseName = pepper.enterpriseName || 'Bell Pepper Fields';
   const inScope = (fieldId) => scope === 'all' || fieldId === scope;
   const fieldName = (id) => (fields.find((f) => f.id === id) || {}).name || id;
 
@@ -5120,8 +5131,36 @@ function PepperWorkspace({
     <>
       <header className="header">
         <div>
-          <p className="brand-eyebrow pepper">{farmProfile.farmName || 'My Farm'} · Bell Pepper</p>
-          <h1 className="brand-title">Bell Pepper Fields</h1>
+          <p className="brand-eyebrow pepper">{farmProfile.farmName || 'My Farm'} · Crops</p>
+          {editingEnterpriseName ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
+              <input
+                autoFocus
+                value={enterpriseNameDraft}
+                onChange={(e) => setEnterpriseDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') { onRenameEnterprise && onRenameEnterprise(enterpriseNameDraft.trim() || enterpriseName); setEditingEnterpriseName(false); }
+                  if (e.key === 'Escape') setEditingEnterpriseName(false);
+                }}
+                style={{ fontSize: 20, fontWeight: 700, background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(212,165,55,0.5)', borderRadius: 6, padding: '4px 8px', color: '#fff', width: 220 }}
+              />
+              <button className="btn btn-gold" style={{ padding: '4px 12px', fontSize: 13 }}
+                onClick={() => { onRenameEnterprise && onRenameEnterprise(enterpriseNameDraft.trim() || enterpriseName); setEditingEnterpriseName(false); }}>
+                Save
+              </button>
+              <button className="btn" style={{ padding: '4px 10px', fontSize: 13 }}
+                onClick={() => setEditingEnterpriseName(false)}>
+                Cancel
+              </button>
+            </div>
+          ) : (
+            <h1 className="brand-title" style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}
+              title="Tap to rename"
+              onClick={() => { setEnterpriseDraft(enterpriseName); setEditingEnterpriseName(true); }}>
+              {enterpriseName}
+              <span style={{ fontSize: 13, fontWeight: 400, color: '#7A9A66', opacity: 0.7 }}>✏️</span>
+            </h1>
+          )}
           <p className="brand-sub">
             {farmProfile.location || 'Location not set'} · {fields.length} fields
             {activeField ? ` · viewing ${activeField.name}` : ' · all fields combined'}
@@ -5150,9 +5189,50 @@ function PepperWorkspace({
       </header>
 
       <div className="field-seg">
-        {scopeOptions.map(([id, label]) => (
-          <button key={id} className={scope === id ? 'active' : ''} onClick={() => setScope(id)}>{label}</button>
-        ))}
+        {scopeOptions.map(([id, label]) => {
+          // 'all' pill — not editable
+          if (id === 'all') return (
+            <button key={id} className={scope === id ? 'active' : ''} onClick={() => setScope(id)}>{label}</button>
+          );
+          // Individual field pill — double-tap or long-press to rename
+          const isEditing = editingFieldId === id;
+          if (isEditing) {
+            return (
+              <span key={id} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                <input
+                  autoFocus
+                  value={fieldNameDraft}
+                  onChange={(e) => setFieldNameDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      const n = fieldNameDraft.trim();
+                      if (n && onRenameField) onRenameField(id, n);
+                      setEditingFieldId(null);
+                    }
+                    if (e.key === 'Escape') setEditingFieldId(null);
+                  }}
+                  style={{ width: 110, fontSize: 13, padding: '3px 7px', borderRadius: 6, border: '1px solid #7A9A66', background: '#1e1e1e', color: '#fff' }}
+                />
+                <button style={{ background: '#7A9A66', border: 'none', borderRadius: 5, color: '#000', fontWeight: 700, fontSize: 12, padding: '3px 8px', cursor: 'pointer' }}
+                  onClick={() => { const n = fieldNameDraft.trim(); if (n && onRenameField) onRenameField(id, n); setEditingFieldId(null); }}>
+                  ✓
+                </button>
+                <button style={{ background: 'none', border: 'none', color: '#888', fontSize: 13, cursor: 'pointer', padding: '3px 4px' }}
+                  onClick={() => setEditingFieldId(null)}>×</button>
+              </span>
+            );
+          }
+          return (
+            <button key={id}
+              className={scope === id ? 'active' : ''}
+              onClick={() => setScope(id)}
+              onDoubleClick={() => { setFieldNameDraft(label); setEditingFieldId(id); }}
+              title="Double-tap to rename"
+            >
+              {label} <span style={{ fontSize: 10, opacity: 0.45, marginLeft: 2 }}>✏️</span>
+            </button>
+          );
+        })}
         <button onClick={() => setModal('add-field')} title="Add another field">+ Add field</button>
       </div>
 
@@ -5664,6 +5744,107 @@ const PEPPER_RATES = {
 };
 
 /* ============================================================= */
+/* =================== CUCUMBER PROGRAMME ======================= */
+/* 10-week open-field hybrid cucumber programme (65–70 DAP).      */
+/* Day offsets are from SOWING DATE (day 0 = day seeds go in).   */
+/* ============================================================= */
+
+const CUCUMBER_PROGRAMME = [
+  // ── WEEK 1 — Soil prep & germination ──
+  { day: 0,  week: 1, title: 'Sowing Day — Basal fertilizer (NPK 15-15-15) + Mulch beds', cat: 'nutrition', time: '7am' },
+  { day: 2,  week: 1, title: 'First irrigation check — keep soil moist, check germination spots', cat: 'scouting', time: '7am' },
+  { day: 5,  week: 1, title: 'Scout for damping-off; apply Metalaxyl+Mancozeb (Ridomil Gold) if soil wet', cat: 'fungicide', time: '7am' },
+
+  // ── WEEK 2 — Establishment ──
+  { day: 8,  week: 2, title: 'Seedling emergence check — thin to 1 plant/hole if double germination', cat: 'scouting', time: '7am' },
+  { day: 10, week: 2, title: 'First foliar: Nitrogen boost — Urea 5g/15L + Seaweed extract (Algua) 10ml/15L', cat: 'nutrition', time: '6am' },
+  { day: 12, week: 2, title: 'Neem Oil spray (EVENING) — aphid & whitefly prevention', cat: 'neem', time: '5pm' },
+  { day: 14, week: 2, title: 'Preventive fungicide: Mancozeb 30g/15L — downy mildew & damping-off', cat: 'fungicide', time: '6am' },
+
+  // ── WEEK 3 — Vegetative push ──
+  { day: 17, week: 3, title: 'Begin vine training / trellising — tie main stem, remove side shoots below 4th node', cat: 'cultural', time: '8am' },
+  { day: 18, week: 3, title: 'Top-dress: NPK 20-10-10 @ 50g/plant — vegetative push', cat: 'nutrition', time: '7am' },
+  { day: 19, week: 3, title: 'Insecticide: Abamectin 1.8EC 5ml/15L — spider mites & thrips', cat: 'pesticide', time: '6am' },
+  { day: 21, week: 3, title: 'Foliar: NPK 20-10-10 dissolved 20g/15L + Algua 10ml/15L', cat: 'nutrition', time: '6am' },
+
+  // ── WEEK 4 — Vegetative / pre-flower ──
+  { day: 24, week: 4, title: 'Fungicide rotation: Copper Hydroxide 35g/15L — alternaria & anthracnose', cat: 'fungicide', time: '6am' },
+  { day: 25, week: 4, title: 'Vine training — continue tying, remove tendrils from main stem', cat: 'cultural', time: '8am' },
+  { day: 26, week: 4, title: 'Foliar: Urea 5g/15L + Algua 10ml/15L + Boron 1g/15L (flower initiation)', cat: 'nutrition', time: '6am' },
+  { day: 28, week: 4, title: 'Scout: check for powdery mildew on undersides of leaves', cat: 'scouting', time: '7am' },
+
+  // ── WEEK 5 — Flower initiation ──
+  { day: 31, week: 5, title: 'Switch fertilizer: NPK 12-24-12 @ 50g/plant (root-zone top-dress) — flower support', cat: 'nutrition', time: '7am' },
+  { day: 32, week: 5, title: 'Neem Oil spray (EVENING) — repeat whitefly & mite buffer', cat: 'neem', time: '5pm' },
+  { day: 33, week: 5, title: 'Insecticide: Lambda-cyhalothrin 2.5EC 5ml/15L — cucumber beetles & aphids', cat: 'pesticide', time: '6am' },
+  { day: 35, week: 5, title: 'Fungicide: Metalaxyl+Mancozeb (Ridomil Gold) 30g/15L — prevent downy mildew before heavy flowering', cat: 'fungicide', time: '6am' },
+
+  // ── WEEK 6 — Full flowering (⚠️ protect pollinators) ──
+  { day: 38, week: 6, title: '⚠️ POLLINATOR WINDOW BEGINS — NO systemic insecticides until fruit set. Scout only.', cat: 'scouting', time: '7am' },
+  { day: 39, week: 6, title: 'Foliar: Calcium Nitrate 15g/15L + Potassium Sulphate 10g/15L (prevent blossom issues)', cat: 'nutrition', time: '6am' },
+  { day: 42, week: 6, title: 'Foliar: NPK 12-24-12 dissolved 20g/15L + Algua 10ml/15L — flower retention', cat: 'nutrition', time: '6am' },
+
+  // ── WEEK 7 — Fruit set ──
+  { day: 44, week: 7, title: 'Fruit set confirmed — resume insecticide: Abamectin 5ml/15L (mites, safe at fruit set)', cat: 'pesticide', time: '6am' },
+  { day: 45, week: 7, title: 'Foliar: Potassium Sulphate 20g/15L — fruit swell support', cat: 'nutrition', time: '6am' },
+  { day: 46, week: 7, title: 'Fungicide: Mancozeb 30g/15L — Anthracnose & powdery mildew prevention', cat: 'fungicide', time: '6am' },
+  { day: 49, week: 7, title: 'Calcium foliar: Calcium Nitrate 15g/15L — prevent blossom end rot', cat: 'nutrition', time: '6am' },
+
+  // ── WEEK 8 — Rapid fruit development ──
+  { day: 51, week: 8, title: 'Top-dress: Potassium Sulphate 50g/plant (root zone) — fruit quality', cat: 'nutrition', time: '7am' },
+  { day: 52, week: 8, title: 'Insecticide: Lambda-cyhalothrin 5ml/15L — beetles; rotate from Abamectin', cat: 'pesticide', time: '6am' },
+  { day: 53, week: 8, title: 'Neem Oil spray (EVENING) — continue mite & whitefly suppression', cat: 'neem', time: '5pm' },
+  { day: 55, week: 8, title: 'Fungicide: Copper Hydroxide 35g/15L — maintain fruit clean, prevent late blight', cat: 'fungicide', time: '6am' },
+  { day: 56, week: 8, title: 'Scout for angular leaf spot, gummosis on stems — record severity', cat: 'scouting', time: '7am' },
+
+  // ── WEEK 9 — First harvest window ──
+  { day: 59, week: 9, title: '🥒 FIRST HARVEST CHECK — inspect oldest fruits (check Day 65 target). Harvest when 15–20cm, firm & dark green.', cat: 'harvest', time: '6am' },
+  { day: 60, week: 9, title: 'Foliar: Potassium Sulphate 20g/15L + Calcium Nitrate 10g/15L — maintain fruit quality during harvest', cat: 'nutrition', time: '6am' },
+  { day: 62, week: 9, title: 'Fungicide: Metalaxyl+Mancozeb 30g/15L (PHI 7d) — last preventive before peak harvest', cat: 'fungicide', time: '6am' },
+  { day: 63, week: 9, title: 'Insecticide: Abamectin 5ml/15L (PHI 3d) — final pest control before continuous harvest', cat: 'pesticide', time: '6am' },
+
+  // ── WEEK 10 — Peak harvest ──
+  { day: 65, week: 10, title: '🥒 PEAK HARVEST BEGINS — pick every 2–3 days. Overripe fruits reduce vine productivity.', cat: 'harvest', time: '6am' },
+  { day: 67, week: 10, title: 'Harvest & inspect — remove yellowing / diseased fruits. Keep vine clean.', cat: 'harvest', time: '6am' },
+  { day: 70, week: 10, title: 'Final foliar: Potassium Sulphate 20g/15L — maintain sugar & crispness to end of crop', cat: 'nutrition', time: '6am' },
+  { day: 72, week: 10, title: '🥒 Last scheduled harvest — assess crop continuation vs. replant decision', cat: 'harvest', time: '6am' },
+];
+
+const CUCUMBER_CAT_LABEL = {
+  nutrition: 'Nutrition / Fertilizer', pesticide: 'Pesticide', fungicide: 'Fungicide',
+  neem: 'Neem Oil (5pm)', cultural: 'Farm Practice', scouting: 'Scouting', harvest: 'Harvest',
+};
+
+const CUCUMBER_RATES = {
+  nutrition: 'NPK 15-15-15 basal: 100–150g/plant preplant · NPK 20-10-10 veg: 50g/plant top-dress · NPK 12-24-12 flower: 50g/plant · Potassium Sulphate fruiting: 50g/plant root-zone or 20g/15L foliar · Calcium Nitrate foliar: 15g/15L · Urea foliar: 5g/15L · Algua: 10ml/15L',
+  pesticide: 'Abamectin 1.8EC: 5ml/15L (mites & thrips, PHI 3d) · Lambda-cyhalothrin 2.5EC: 5ml/15L (beetles & aphids, PHI 7d) · Rotate these two on alternate applications',
+  fungicide: 'Mancozeb 80WP: 30g/15L (preventive, weekly) · Metalaxyl+Mancozeb (Ridomil Gold 68WP): 30g/15L (downy mildew, PHI 7d) · Copper Hydroxide: 35g/15L (anthracnose, alternaria)',
+  neem: 'Neem Oil: 25ml/15L + 2ml dish soap · SPRAY ALONE — EVENING ONLY (after 5pm) · Never on same day as fungicide · Every 10–14 days',
+  cultural: 'Trellising: twine or bamboo poles at 1.5–2m · Tie main stem every 20–25cm · Remove all side shoots below the 4th node · 1 plant per hole, 60×90cm spacing recommended',
+  scouting: 'Check undersides of leaves for whitefly, mites, thrips. Look for yellowing (N deficiency), water-soaked lesions (downy mildew), white powder (powdery mildew). Record pest pressure 1–5 scale.',
+  harvest: 'Harvest at 15–20cm length, firm and dark green — do NOT wait for yellowing. Pick every 2–3 days. Harvest early morning (5–8am). Use clean sharp knife. Pack in shade.',
+};
+
+/** Converts the Cucumber 10-week template into the unified spray-programme
+    event format, with the anchor date shifted to sowing day (day 0).
+    Bakes dosage/rate text onto each event for self-contained records. */
+function loadCucumberTemplate(sowingDate) {
+  return CUCUMBER_PROGRAMME.map((ev) => ({
+    id: newId(),
+    dayOffset: ev.day,
+    // If a sowing date is supplied, resolve to absolute dates so they show
+    // without needing a separate anchor set on the field.
+    date: sowingDate ? addDaysISO(sowingDate, ev.day) : null,
+    title: ev.title,
+    cat: ev.cat,
+    rate: CUCUMBER_RATES[ev.cat] || null,
+    phi: null,
+    notes: `Week ${ev.week} · ${CUCUMBER_CAT_LABEL[ev.cat] || ev.cat}`,
+    week: ev.week,
+  }));
+}
+
+/* ============================================================= */
 /* ================= UNIFIED SPRAY PROGRAMME ENGINE ============= */
 /* Works identically whether the field is Bell Pepper or a custom */
 /* crop farm — one stored events array, three ways to populate it */
@@ -5759,7 +5940,8 @@ function SprayProgrammeTab({
   const { showToast, askConfirm } = useToastConfirm();
   const [filter, setFilter] = useState('all');
   const [openId, setOpenId] = useState(null);
-  const [modal, setModal] = useState(null); // 'event' | 'pattern' | null
+  const [modal, setModal] = useState(null); // 'event' | 'pattern' | 'cucumber-load' | null
+  const [cucumberSowingDate, setCucumberSowingDate] = useState(todayISO());
   const fileRef = useRef(null);
 
   if (!field) {
@@ -5912,13 +6094,17 @@ function SprayProgrammeTab({
         <button className="btn btn-gold" onClick={() => { onLoadTemplate(); showToast('Loaded the standard Bell Pepper 14-week programme.', 'green'); }}>
           Load Bell Pepper template
         </button>
+        <button className="btn" style={{ background: 'rgba(122,154,102,0.18)', border: '1px solid #7A9A6655', color: '#7A9A66', fontWeight: 700 }}
+          onClick={() => setModal('cucumber-load')}>
+          🥒 Load Cucumber template
+        </button>
         <input ref={fileRef} type="file" accept=".csv" style={{ display: 'none' }} onChange={handleCsvFile} />
       </div>
 
       {resolved.length === 0 ? (
         <p className="empty" style={{ padding: '18px 0' }}>
           No spray programme yet for {field.name} — add events by hand, generate a repeating pattern,
-          upload a CSV, or load the Bell Pepper standard template as a starting point to edit from.
+          upload a CSV, or load the Bell Pepper or Cucumber standard template as a starting point to edit from.
         </p>
       ) : (
         <>
@@ -5972,6 +6158,49 @@ function SprayProgrammeTab({
             </div>
           )}
         </>
+      )}
+
+      {modal === 'cucumber-load' && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', zIndex: 900, display: 'flex', alignItems: 'flex-end' }}
+          onClick={(e) => { if (e.target === e.currentTarget) setModal(null); }}>
+          <div style={{ background: '#1e1e1e', borderRadius: '18px 18px 0 0', padding: '28px 20px 36px', width: '100%', maxWidth: 480, margin: '0 auto', boxSizing: 'border-box' }}>
+            <h3 style={{ margin: '0 0 4px', fontSize: 18, color: '#7A9A66' }}>🥒 Load Cucumber Template</h3>
+            <p style={{ margin: '0 0 18px', fontSize: 13, color: '#aaa', lineHeight: 1.5 }}>
+              Loads a <strong style={{ color: '#fff' }}>40-event, 10-week open-field cucumber programme</strong> covering fungicides, pesticides, fertilizers, vine training, pollinator windows, and harvest checks.
+              Enter your sowing date and all task dates shift automatically.
+            </p>
+
+            {field.sprayProgramme?.events?.length > 0 && (
+              <div style={{ background: 'rgba(212,165,55,0.12)', border: '1px solid rgba(212,165,55,0.35)', borderRadius: 8, padding: '10px 14px', marginBottom: 16, fontSize: 13, color: '#D4A537' }}>
+                ⚠️ <strong>{field.sprayProgramme.events.length} existing event{field.sprayProgramme.events.length !== 1 ? 's' : ''}</strong> on {field.name} will be kept — cucumber tasks are added on top. Remove them manually if you want a clean slate.
+              </div>
+            )}
+
+            <label style={{ display: 'block', fontSize: 13, color: '#ccc', marginBottom: 6 }}>Sowing date</label>
+            <input
+              type="date"
+              value={cucumberSowingDate}
+              onChange={(e) => setCucumberSowingDate(e.target.value)}
+              style={{ width: '100%', boxSizing: 'border-box', padding: '10px 12px', borderRadius: 8, border: '1px solid rgba(122,154,102,0.5)', background: '#111', color: '#fff', fontSize: 15, marginBottom: 20 }}
+            />
+
+            <div style={{ display: 'flex', gap: 10 }}>
+              <button
+                className="btn btn-gold"
+                style={{ flex: 1, padding: '12px 0', fontSize: 15, fontWeight: 700 }}
+                onClick={() => {
+                  const events = loadCucumberTemplate(cucumberSowingDate);
+                  onAddPattern(events);
+                  setModal(null);
+                  showToast(`Loaded 40 cucumber programme tasks from ${fmtDate(cucumberSowingDate)}.`, 'green');
+                }}
+              >
+                Load 40 tasks
+              </button>
+              <button className="btn" style={{ padding: '12px 18px' }} onClick={() => setModal(null)}>Cancel</button>
+            </div>
+          </div>
+        </div>
       )}
 
       {modal === 'event' && (
