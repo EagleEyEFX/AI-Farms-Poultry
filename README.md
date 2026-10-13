@@ -131,8 +131,19 @@ prices move.
 
 ## Bell Pepper Fields
 
-Two-field operation with a Field A / Field B / Both selector filtering every view.
+A multi-field operation with a per-field selector (Field A / Field B / ... / All
+fields) filtering every view.
 
+- **This whole section is renameable.** Hit **Rename** next to the title (also
+  shown in the top navigation) if it's not just bell peppers anymore — e.g.
+  rename it to "Crops". Renaming only changes the label; none of your fields
+  or history move or reset.
+- **Fields are yours to add, rename, and remove.** Under **Crop Cycle**, use
+  **+ Add field** to create a new one (Field C, D, ... or any name you like —
+  "Tomato patch", "Plot 3"), **Edit** to rename an existing field or change its
+  variety/dates, and **Delete field** to remove one (you always need at least
+  one field, so the last one can't be deleted). Each field gets its own spray
+  programme, scouting, and harvest history, independent of the others.
 - **Dashboard** — plant stand, pest pressure, harvest-hold status, yield,
   revenue / cost / margin, plus alerts.
 - **Crop Cycle** — variety, transplant date, live days-after-transplant counter,
@@ -254,6 +265,39 @@ This is a plan, not a log — record what you actually spray in **Spray &
 Fertigation** as you go, which is what your PHI holds, resistance-rotation
 warnings, and spray costs are based on.
 
+### Crop programmes: Bell Pepper and Cucumber (built in)
+
+Every field has a **Crop programme** setting (Edit field, **+ New Batch**, or
+**+ Add field**): Bell Pepper, Cucumber, or None (build your own). It does two
+things:
+
+- **Loads itself.** The first time you set a planting date on a field that has
+  no programme yet, its programme loads with **Day 0 = that date** (transplant
+  day for pepper, sowing day for cucumber). No CSV needed — plant cucumber on
+  any field, any date, and the dates follow. A toast tells you when it loads.
+  It only fires when the date or crop type *changes* on an empty programme, so
+  clearing a programme on purpose never makes it come back on an unrelated edit,
+  and an existing programme is never overwritten.
+- **Picks the right stage labels and rules** shown under the programme.
+
+**+ New Batch** on a field that already has a programme asks whether to start
+a fresh one (the old events stay archived with the previous batch in Soil &
+Batches) or keep the current one and re-date it from the new start.
+
+The **Cucumber** programme (trellised, drip-fertigated, ~12 weeks / 53 events)
+covers sowing, damping-off cover, fertigation by growth stage (starter →
+vegetative → flowering → high-potassium fruiting → taper), a fungicide rotation
+(mancozeb / metalaxyl-M / azoxystrobin / copper) with short-PHI products once
+harvest starts, an abamectin broad-mite pair built in from Day 18, trellis and
+pruning steps, pollinator rules from flowering, scouting checkpoints, fruit-fly
+traps, harvest guidance and end-of-cycle rotation. Rates are standard planning
+figures per 15 L / per 1000 L; **always confirm strength and PHI on your own
+product labels.** Tap any event to see the rate and the notes together.
+
+The same programme is also available as `cucumber_spray_programme.csv`
+(day-offset based, with a `date` column pre-filled for a 13 Oct 2026 sowing for
+reference — the app uses `day_offset`, so it works on any sowing date).
+
 ---
 
 ## Fuel Tracker
@@ -355,14 +399,21 @@ system, built four ways:
 - **Upload a CSV** — columns `day_offset` (or `date`), `title`, `category`,
   `rate`, `phi`, `notes`. Either `day_offset` or `date` is required per
   row; the rest are optional. Rows with problems are skipped with a clear
-  reason, not silently dropped.
+  reason, not silently dropped. If the field already has events, you're
+  asked whether the CSV should **replace** them or **add** to them — so
+  swapping in a completely different programme (say, a targeted pest
+  response) doesn't silently merge into whatever was there before.
 - **Load the Bell Pepper template** — the same 14-week, 42-event
   nutrition/pest/disease programme that used to be hardcoded, now just the
-  first of what can be several starting points, on any crop field.
+  first of what can be several starting points, on any crop field. This
+  always replaces the field's current programme outright.
 
 Once loaded, a programme is fully yours to edit — delete events you don't
-need, add ones you do, regardless of how it started. **Generate reminders**
-turns the remaining events into dated reminders in one tap, same as before.
+need, add ones you do, regardless of how it started. A **Clear programme**
+link appears whenever a field has events, for starting over from nothing
+— useful before loading a CSV or pattern you want to stand alone rather
+than blend with what's already there. **Generate reminders** turns the
+remaining events into dated reminders in one tap, same as before.
 
 ---
 

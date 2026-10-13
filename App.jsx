@@ -1,10 +1,11 @@
 import { useState, useEffect, useMemo, useRef, useCallback, createContext, useContext } from 'react';
 import {
-  ResponsiveContainer, ComposedChart, BarChart, Line, Bar, Area, XAxis, YAxis,
+  ResponsiveContainer, ComposedChart, Line, Bar, Area, XAxis, YAxis,
   CartesianGrid, Tooltip, Legend, AreaChart, ReferenceDot,
 } from 'recharts';
 import { SEED } from './data/seed';
 import Papa from 'papaparse';
+import { CUCUMBER_PROGRAMME, cucumberStageForWeek, CUCUMBER_RULES } from './data/cucumberProgramme';
 import ROSS308 from './data/ross308_standard.json';
 import {
   pullRemote, pushRemote, isCloudConfigured, getCloudConfig,
@@ -12,7 +13,6 @@ import {
   getUser, signIn, signUp, signOut, resetPassword,
 } from './sync';
 import './App.css';
-import FinancialsModule from './FinancialsModule';
 
 const STORAGE_KEY = 'aifarms_poultry_tracker_v1';
 
@@ -108,9 +108,10 @@ function fieldSoilDefaults() {
 
 function defaultPepper() {
   return {
+    moduleName: 'Bell Pepper', // editable — rename when the fields grow beyond just peppers
     fields: [
-      { id: 'A', name: 'Field A', variety: '', transplantDate: '', plantCount: null, spacing: '', expectedHarvestDAT: 70, setupCost: null, notes: '', sprayProgramme: { events: [] }, ...fieldSoilDefaults() },
-      { id: 'B', name: 'Field B', variety: '', transplantDate: '', plantCount: null, spacing: '', expectedHarvestDAT: 70, setupCost: null, notes: '', sprayProgramme: { events: [] }, ...fieldSoilDefaults() },
+      { id: 'A', name: 'Field A', programmeKey: 'bell_pepper', variety: '', transplantDate: '', plantCount: null, spacing: '', expectedHarvestDAT: 70, setupCost: null, notes: '', sprayProgramme: { events: [] }, ...fieldSoilDefaults() },
+      { id: 'B', name: 'Field B', programmeKey: 'bell_pepper', variety: '', transplantDate: '', plantCount: null, spacing: '', expectedHarvestDAT: 70, setupCost: null, notes: '', sprayProgramme: { events: [] }, ...fieldSoilDefaults() },
     ],
     scouting: [],
     sprays: [],
@@ -299,7 +300,9 @@ function migrate(saved) {
   // the hardcoded template. Backfill it once here so an in-use field (one
   // with a transplant date already set) doesn't suddenly look empty; a
   // field nobody has started yet just gets a clean, empty programme.
-  pepper.fields = (pepper.fields || []).map((f) => {
+  pepper.fields = (pepper.fields || []).map((raw) => {
+    // Fields from before programme types existed were all Bell Pepper.
+    const f = raw.programmeKey === undefined ? { ...raw, programmeKey: 'bell_pepper' } : raw;
     if (f.sprayProgramme && f.sprayProgramme.events) return f;
     return { ...f, sprayProgramme: { events: f.transplantDate ? loadBellPepperTemplate() : [] } };
   });
@@ -910,50 +913,6 @@ function AppInner() {
     used: e.kind === 'usage' ? e.ref.feedGiven : e.ref.used,
   })), [feedLedger]);
 
-  // ── Revenue chart: monthly breakdown by section, from earliest record to today ──
-  const revenueChartData = useMemo(() => {
-    // Gather all dated revenue events across every section
-    const allEvents = [];
-    // Poultry sales
-    (data.sales || []).forEach((s) => { if (s.date && Number(s.amount)) allEvents.push({ date: s.date, section: 'Poultry', amount: Number(s.amount) }); });
-    // Pepper harvests (weightKg × pricePerKg)
-    (data.pepper?.harvests || []).forEach((h) => {
-      const amt = (Number(h.weightKg) || 0) * (Number(h.pricePerKg) || 0);
-      if (h.date && amt) allEvents.push({ date: h.date, section: 'Pepper', amount: amt });
-    });
-    // Goat sales (revenue field is `price`)
-    (data.goats?.sales || []).forEach((s) => { if (s.date && Number(s.price)) allEvents.push({ date: s.date, section: 'Goats', amount: Number(s.price) }); });
-    // Custom farms (livestock salesLog only — crop harvests have no price)
-    (data.customFarms || []).forEach((farm) => {
-      if (farm.category === 'livestock') {
-        (farm.salesLog || []).forEach((s) => { if (s.date && Number(s.amount)) allEvents.push({ date: s.date, section: 'My Farms', amount: Number(s.amount) }); });
-      }
-    });
-    if (allEvents.length === 0) return [];
-    // Find the earliest date across all events
-    const dates = allEvents.map((e) => new Date(e.date)).filter((d) => !isNaN(d));
-    const earliest = new Date(Math.min(...dates));
-    const today = new Date();
-    // Build ordered list of YYYY-MM keys from earliest month to current month
-    const months = [];
-    const cur = new Date(earliest.getFullYear(), earliest.getMonth(), 1);
-    while (cur <= today) {
-      months.push(`${cur.getFullYear()}-${String(cur.getMonth() + 1).padStart(2, '0')}`);
-      cur.setMonth(cur.getMonth() + 1);
-    }
-    // Aggregate events into monthly buckets
-    const buckets = {};
-    months.forEach((m) => { buckets[m] = { month: m, Poultry: 0, Pepper: 0, Goats: 0, 'My Farms': 0 }; });
-    allEvents.forEach((e) => {
-      const m = e.date.slice(0, 7);
-      if (buckets[m]) buckets[m][e.section] = (buckets[m][e.section] || 0) + e.amount;
-    });
-    return months.map((m) => ({
-      ...buckets[m],
-      label: new Date(m + '-01').toLocaleDateString('en-GB', { month: 'short', year: '2-digit', timeZone: 'UTC' }),
-    }));
-  }, [data.sales, data.pepper?.harvests, data.goats?.sales, data.customFarms]);
-
   /** Stamp any local edit with "now", so sync always knows this device has
       the freshest copy — without this, a local edit could be silently
       overwritten by an older remote copy on the next sync. */
@@ -1111,11 +1070,11 @@ function AppInner() {
     setData((d) => touch({ ...d, customFarms: (d.customFarms || []).filter((f) => f.id !== farmId) }));
   }
   function addCustomFarmField(farmId, field) {
-    patchCustomFarm(farmId, (f) => ({ ...f, fields: [...(f.fields || []), field] }));
+    patchCustomFarm(farmId, (f) => ({ ...f, fields: [...(f.fields || []), withAutoProgramme(null, field)] }));
   }
   function updateCustomFarmField(farmId, fieldId, patch) {
     patchCustomFarm(farmId, (f) => ({
-      ...f, fields: (f.fields || []).map((fl) => (fl.id === fieldId ? { ...fl, ...patch } : fl)),
+      ...f, fields: (f.fields || []).map((fl) => (fl.id === fieldId ? withAutoProgramme(fl, { ...fl, ...patch }) : fl)),
     }));
   }
   function deleteCustomFarmField(farmId, fieldId) {
@@ -1437,28 +1396,19 @@ function AppInner() {
   }
 
   function updateField(id, patch) {
-    setData((d) => touch({ ...d, pepper: { ...d.pepper, fields: d.pepper.fields.map((f) => (f.id === id ? { ...f, ...patch } : f)) } }));
+    setData((d) => touch({
+      ...d,
+      pepper: { ...d.pepper, fields: d.pepper.fields.map((f) => (f.id === id ? withAutoProgramme(f, { ...f, ...patch }) : f)) },
+    }));
   }
-  /** Adds a new bell pepper field with its own crop cycle, spray programme and soil targets. */
-  function addPepperField(name) {
-    const id = newId();
-    setData((d) => {
-      const n = d.pepper.fields.length + 1;
-      const field = {
-        id, name: (name || '').trim() || `Field ${n}`,
-        variety: '', transplantDate: '', plantCount: null, spacing: '', expectedHarvestDAT: 70,
-        setupCost: null, notes: '', sprayProgramme: { events: [] }, ...fieldSoilDefaults(),
-      };
-      return touch({ ...d, pepper: { ...d.pepper, fields: [...d.pepper.fields, field] } });
-    });
-    return id;
+  function addPepperField(field) {
+    setData((d) => touch({ ...d, pepper: { ...d.pepper, fields: [...d.pepper.fields, withAutoProgramme(null, field)] } }));
   }
-  /** Removes a field. The UI only offers this for fields with no records and never the last field. */
   function deletePepperField(id) {
-    setData((d) => {
-      if (d.pepper.fields.length <= 1) return d;
-      return touch({ ...d, pepper: { ...d.pepper, fields: d.pepper.fields.filter((f) => f.id !== id) } });
-    });
+    setData((d) => touch({ ...d, pepper: { ...d.pepper, fields: d.pepper.fields.filter((f) => f.id !== id) } }));
+  }
+  function renamePepperModule(name) {
+    setData((d) => touch({ ...d, pepper: { ...d.pepper, moduleName: name } }));
   }
   function addManureReading(entry) {
     setData((d) => touch({ ...d, pepper: { ...d.pepper, manureReadings: [...(d.pepper.manureReadings || []), entry] } }));
@@ -1473,12 +1423,17 @@ function AppInner() {
     setData((d) => touch({ ...d, pepper: { ...d.pepper, soilReadings: (d.pepper.soilReadings || []).filter((r) => r.id !== id) } }));
   }
   /** Closes out the field's current planting as a historical batch, then
-      starts the new one as the field's live crop-cycle state. */
-  function startNewBatch(fieldId, newBatch) {
+      starts the new one as the field's live crop-cycle state. With
+      `freshProgramme`, the field's current spray programme is archived with
+      the old batch and a clean one for the new planting is loaded from the
+      field's programme type; otherwise the current programme stays and simply
+      re-dates itself from the new start date. */
+  function startNewBatch(fieldId, newBatch, freshProgramme = false) {
     setData((d) => {
       const field = d.pepper.fields.find((f) => f.id === fieldId);
       const closedBatches = [...(d.pepper.batches || [])];
       if (field && field.transplantDate) {
+        const oldEvents = programmeEventsOf(field);
         closedBatches.push({
           id: newId(), fieldId,
           batchLabel: field.currentBatchLabel || 'Batch 1',
@@ -1487,9 +1442,17 @@ function AppInner() {
           expectedHarvestDAT: field.expectedHarvestDAT, setupCost: field.setupCost,
           manureAppliedDate: field.manureAppliedDate, notes: field.notes,
           status: 'closed', closedDate: newBatch.transplantDate,
+          ...(freshProgramme && oldEvents.length ? { programmeKey: field.programmeKey || '', sprayProgramme: { events: oldEvents } } : {}),
         });
       }
-      const fields = d.pepper.fields.map((f) => (f.id === fieldId ? { ...f, ...newBatch } : f));
+      const fields = d.pepper.fields.map((f) => {
+        if (f.id !== fieldId) return f;
+        const merged = { ...f, ...newBatch };
+        // Fresh start (or an empty programme) -> let the field's programme
+        // type load a clean one for the new planting date.
+        const base = freshProgramme ? { ...merged, sprayProgramme: { events: [] } } : merged;
+        return withAutoProgramme(null, base);
+      });
       return touch({ ...d, pepper: { ...d.pepper, fields, batches: closedBatches } });
     });
   }
@@ -1511,8 +1474,8 @@ function AppInner() {
   /** Moves a nursery batch into the field it's ready for — closes out any
       current planting on that field the same way "+ New Batch" does, and
       marks the nursery batch transplanted so it drops off the active list. */
-  function transplantNurseryBatch(nurseryBatchId, fieldId, newBatch) {
-    startNewBatch(fieldId, newBatch);
+  function transplantNurseryBatch(nurseryBatchId, fieldId, newBatch, freshProgramme = false) {
+    startNewBatch(fieldId, newBatch, freshProgramme);
     updateNurseryBatch(nurseryBatchId, {
       status: 'transplanted', transplantedDate: newBatch.transplantDate, transplantedToFieldId: fieldId,
     });
@@ -1606,7 +1569,7 @@ function AppInner() {
         <button
           className={`ws-btn${workspace === 'pepper' ? ' active pepper' : ''}`}
           onClick={() => { setWorkspace('pepper'); setModal(null); }}
-        >Bell Pepper Fields</button>
+        >{data.pepper.moduleName || 'Bell Pepper'}</button>
         <button
           className={`ws-btn${workspace === 'goats' ? ' active goats' : ''}`}
           onClick={() => { setWorkspace('goats'); setModal(null); }}
@@ -1619,10 +1582,6 @@ function AppInner() {
           className={`ws-btn${workspace === 'farm' ? ' active' : ''}`}
           onClick={() => { setWorkspace('farm'); setModal(null); }}
         >Whole Farm</button>
-        <button
-          className={`ws-btn${workspace === 'financials' ? ' active' : ''}`}
-          onClick={() => { setWorkspace('financials'); setModal(null); }}
-        >💰 Financials</button>
       </div>
 
       <SyncBar
@@ -1766,7 +1725,6 @@ function AppInner() {
           growthChartData={growthChartData}
           vaxStatus={vaxStatus}
           vaxPending={vaxPending}
-          revenueChartData={revenueChartData}
           onExport={exportWeeklyReport}
         />
       )}
@@ -2023,6 +1981,7 @@ function AppInner() {
           onUpdateField={updateField}
           onAddField={addPepperField}
           onDeleteField={deletePepperField}
+          onRenameModule={renamePepperModule}
           onAddScouting={addScouting}
           onAddSpray={addSpray}
           onAddHarvest={addHarvest}
@@ -2121,19 +2080,6 @@ function AppInner() {
         />
       )}
 
-      {workspace === 'financials' && (
-        <FinancialsModule
-          data={data}
-          sales={data.sales || []}
-          expenses={data.expenses || []}
-          pepperHarvests={data.pepper?.harvests || []}
-          goatSales={data.goats?.sales || []}
-          customFarms={data.customFarms || []}
-          flocks={data.flocks || []}
-          farmProfile={data.farmProfile}
-        />
-      )}
-
       {modal === 'sync' && null}
 
       {invoicePrefill && (
@@ -2165,7 +2111,7 @@ function DashboardTab({
   weeksToPOL, polWeek, currentFeedPhase, standardWeight, latestSample,
   flockType, fcr, fcrTarget, totalRevenue, flockCost, flockMargin,
   feedDaysLeft, avgDailyFeed, daysSinceLitterChange, litterCondition, litterDue, manureHarvested,
-  mortalityByCause, chartData, feedChartData, growthChartData, vaxStatus, vaxPending, revenueChartData, onExport,
+  mortalityByCause, chartData, feedChartData, growthChartData, vaxStatus, vaxPending, onExport,
 }) {
   const causeEntries = Object.entries(mortalityByCause);
   const isBroiler = flockType === 'broiler';
@@ -2296,78 +2242,6 @@ function DashboardTab({
         </div>
       </div>
 
-      {/* ── Production Trend (FIRST chart) ── */}
-      {!isBroiler && (
-        <div className="panel">
-          <div className="panel-head"><h3>Egg production trend — daily eggs &amp; hen-day %</h3></div>
-          <div className="chart-card">
-            <ResponsiveContainer width="100%" height="100%">
-              <ComposedChart data={windowedChart} margin={{ top: 10, right: 16, left: -10, bottom: 0 }}>
-                <CartesianGrid stroke="#423827" strokeDasharray="3 3" vertical={false} />
-                <XAxis dataKey="date" tickLine={false} axisLine={{ stroke: '#423827' }} />
-                <YAxis yAxisId="eggs" tickLine={false} axisLine={false} />
-                <YAxis yAxisId="pct" orientation="right" tickLine={false} axisLine={false} unit="%" domain={[0, 100]} />
-                <Tooltip
-                  contentStyle={{ background: '#241F18', border: '1px solid #423827', borderRadius: 8, fontSize: 12 }}
-                  formatter={(val, name) => name === 'Hen-day %' ? [`${num(val, 1)}%`, name] : [num(val), name]}
-                />
-                <Legend wrapperStyle={{ fontSize: 12, color: '#B9AD9A' }} />
-                <Bar yAxisId="eggs" dataKey="eggs" name="Eggs collected" fill="#D4A537" opacity={0.85} barSize={8} radius={[3, 3, 0, 0]} />
-                <Line yAxisId="pct" type="monotone" dataKey="henDay" name="Hen-day %" stroke="#7A9A66" strokeWidth={2} dot={false} connectNulls />
-              </ComposedChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-      )}
-      {isBroiler && (
-        <div className="panel">
-          <div className="panel-head"><h3>Daily feed intake &amp; flock size trend</h3></div>
-          <div className="chart-card">
-            <ResponsiveContainer width="100%" height="100%">
-              <ComposedChart data={windowedChart} margin={{ top: 10, right: 16, left: -10, bottom: 0 }}>
-                <CartesianGrid stroke="#423827" strokeDasharray="3 3" vertical={false} />
-                <XAxis dataKey="date" tickLine={false} axisLine={{ stroke: '#423827' }} />
-                <YAxis yAxisId="left" tickLine={false} axisLine={false} />
-                <YAxis yAxisId="right" orientation="right" tickLine={false} axisLine={false} />
-                <Tooltip contentStyle={{ background: '#241F18', border: '1px solid #423827', borderRadius: 8, fontSize: 12 }} />
-                <Legend wrapperStyle={{ fontSize: 12, color: '#B9AD9A' }} />
-                <Area yAxisId="left" type="monotone" dataKey="feedGiven" name="Feed (kg)" fill="#7A9A6622" stroke="#7A9A66" strokeWidth={2} />
-                <Line yAxisId="right" type="monotone" dataKey="closing" name="Birds" stroke="#D4A537" strokeWidth={2} dot={false} />
-              </ComposedChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-      )}
-
-      {/* ── Revenue by section — from first record to today ── */}
-      {revenueChartData && revenueChartData.length > 0 && (
-        <div className="panel">
-          <div className="panel-head">
-            <h3>Revenue by farm section</h3>
-            <span style={{ fontSize: 11, color: '#83786A' }}>GH₵ · from first recorded sale</span>
-          </div>
-          <div className="chart-card">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={revenueChartData} margin={{ top: 10, right: 16, left: -10, bottom: 0 }}>
-                <CartesianGrid stroke="#423827" strokeDasharray="3 3" vertical={false} />
-                <XAxis dataKey="label" tickLine={false} axisLine={{ stroke: '#423827' }} tick={{ fontSize: 11 }} />
-                <YAxis tickLine={false} axisLine={false} tickFormatter={(v) => `₵${v >= 1000 ? (v/1000).toFixed(1)+'k' : v}`} />
-                <Tooltip
-                  contentStyle={{ background: '#241F18', border: '1px solid #423827', borderRadius: 8, fontSize: 12 }}
-                  formatter={(val, name) => [`GH₵ ${Number(val).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, name]}
-                />
-                <Legend wrapperStyle={{ fontSize: 12, color: '#B9AD9A' }} />
-                <Bar dataKey="Poultry"  stackId="rev" fill="#D4A537" radius={[0,0,0,0]} />
-                <Bar dataKey="Pepper"   stackId="rev" fill="#7A9A66" radius={[0,0,0,0]} />
-                <Bar dataKey="Goats"    stackId="rev" fill="#C15F41" radius={[0,0,0,0]} />
-                <Bar dataKey="My Farms" stackId="rev" fill="#7AABBA" radius={[3,3,0,0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-      )}
-
-      {/* ── Flock population & mortality ── */}
       <div className="panel">
         <div className="panel-head"><h3>Flock population &amp; daily mortality</h3></div>
         <div className="chart-card">
@@ -3491,22 +3365,55 @@ function nurseryStatus(batch, asOf = todayISO()) {
 }
 
 function PepperWorkspace({
-  pepper, farmProfile, reminders, expenses, onUpdateField, onAddField, onDeleteField, onAddScouting, onAddSpray, onAddHarvest,
+  pepper, farmProfile, reminders, expenses, onUpdateField, onAddField, onDeleteField, onRenameModule,
+  onAddScouting, onAddSpray, onAddHarvest,
   onAddInput, onUpdateInput, onDeleteInput, onAddReminder, onToggleReminder, onDeleteReminder,
   onAddManureReading, onDeleteManureReading, onAddSoilReading, onDeleteSoilReading,
   onStartNewBatch, onDeleteBatch,
   onAddNurseryBatch, onUpdateNurseryBatch, onDeleteNurseryBatch, onTransplantNurseryBatch,
   onInvoiceHarvest,
 }) {
+  const { showToast, askConfirm } = useToastConfirm();
   const [ptab, setPtab] = useState('dashboard');
   const [soilView, setSoilView] = useState('soil'); // 'soil' | 'batches'
-  const [scope, setScope] = useState('all');   // 'all' | any field id
+  const [scope, setScope] = useState('all');   // 'all' | 'A' | 'B'
   const [modal, setModal] = useState(null);      // 'field:A' | 'scout' | 'spray' | 'harvest' | 'manure' | 'soil' | 'batch:A'
   const [sprayPrefill, setSprayPrefill] = useState(null); // pre-fill data when opening SprayForm from the programme
 
   const fields = pepper.fields;
+  const moduleName = pepper.moduleName || 'Bell Pepper';
   const inScope = (fieldId) => scope === 'all' || fieldId === scope;
   const fieldName = (id) => (fields.find((f) => f.id === id) || {}).name || id;
+
+  /** Tells the farmer when a programme just loaded itself, so it never
+      appears silently. `prior` is the field before the save (null if new). */
+  function toastAutoProgramme(prior, saved) {
+    const key = autoProgrammeKey(prior, saved);
+    if (!key) return;
+    const t = PROGRAMME_TEMPLATES[key];
+    showToast(`Loaded the ${t.label} programme (${t.build().length} events) — Day 0 is ${fmtDate(saved.transplantDate)}.`, 'green');
+  }
+
+  /** Starting a new planting on a field that already has a programme: ask
+      whether to start a fresh one (old events stay archived with the old
+      batch) or keep the current one and just re-date it. */
+  async function startBatchFlow(fieldId, patch, run) {
+    const fld = fields.find((x) => x.id === fieldId);
+    const key = patch.programmeKey !== undefined ? patch.programmeKey : (fld && fld.programmeKey);
+    const existing = programmeEventsOf(fld).length;
+    let fresh = false;
+    if (key && PROGRAMME_TEMPLATES[key] && existing > 0) {
+      fresh = await askConfirm(
+        `${fld.name} already has ${existing} programme events. Start a fresh ${PROGRAMME_TEMPLATES[key].label} programme from the new date? ` +
+        'The old events stay archived with the previous batch. Cancel keeps the current programme and just re-dates it from the new start date.',
+        { danger: false, confirmLabel: 'Start fresh programme' },
+      );
+    }
+    run(fresh);
+    if (key && PROGRAMME_TEMPLATES[key] && (fresh || existing === 0) && patch.transplantDate) {
+      showToast(`Loaded the ${PROGRAMME_TEMPLATES[key].label} programme (${PROGRAMME_TEMPLATES[key].build().length} events) — Day 0 is ${fmtDate(patch.transplantDate)}.`, 'green');
+    }
+  }
 
   const scouting = useMemo(() => [...pepper.scouting].sort((a, b) => new Date(a.date) - new Date(b.date)), [pepper.scouting]);
   const sprays = useMemo(() => [...pepper.sprays].sort((a, b) => new Date(a.date) - new Date(b.date)), [pepper.sprays]);
@@ -3623,16 +3530,23 @@ function PepperWorkspace({
     pest: s.pest,
   }));
 
-  const scopeOptions = [['all', fields.length > 1 ? 'All fields' : 'Whole farm'], ...fields.map((f) => [f.id, f.name])];
+  const scopeOptions = [['all', 'All fields'], ...fields.map((f) => [f.id, f.name])];
 
   return (
     <>
       <header className="header">
         <div>
-          <p className="brand-eyebrow pepper">{farmProfile.farmName || 'My Farm'} · Bell Pepper</p>
-          <h1 className="brand-title">Bell Pepper Fields</h1>
+          <p className="brand-eyebrow pepper">{farmProfile.farmName || 'My Farm'} · {moduleName}</p>
+          <h1 className="brand-title">
+            {moduleName}
+            <button
+              className="link-btn"
+              style={{ marginLeft: 10, fontSize: 13, fontWeight: 400, verticalAlign: 'middle' }}
+              onClick={() => setModal('rename-module')}
+            >Rename</button>
+          </h1>
           <p className="brand-sub">
-            {farmProfile.location || 'Location not set'} · {fields.length} fields
+            {farmProfile.location || 'Location not set'} · {fields.length} field{fields.length === 1 ? '' : 's'}
             {activeField ? ` · viewing ${activeField.name}` : ' · all fields combined'}
           </p>
         </div>
@@ -3662,7 +3576,6 @@ function PepperWorkspace({
         {scopeOptions.map(([id, label]) => (
           <button key={id} className={scope === id ? 'active' : ''} onClick={() => setScope(id)}>{label}</button>
         ))}
-        <button onClick={() => setModal('add-field')} title="Add another field">+ Add field</button>
       </div>
 
       <nav className="tabs pepper">
@@ -3711,6 +3624,12 @@ function PepperWorkspace({
           fields={fieldsScoped} datOf={datOf}
           onEdit={(id) => setModal(`field:${id}`)}
           onNewBatch={(id) => setModal(`batch:${id}`)}
+          onAdd={() => setModal('field')}
+          onDelete={(id) => {
+            if (fields.length <= 1) { showToast("Can't delete your last field — add another one first.", 'rust'); return; }
+            if (scope === id) setScope('all');
+            onDeleteField(id);
+          }}
         />
       )}
 
@@ -3720,7 +3639,6 @@ function PepperWorkspace({
           reminders={reminders}
           onAddReminder={onAddReminder}
           onLogNow={(prefill) => { setSprayPrefill(prefill); setModal('spray'); }}
-          showPepperRules
           onAddEvent={(ev) => {
             const fld = activeField || fields[0];
             onUpdateField(fld.id, { sprayProgramme: { events: [...((fld.sprayProgramme && fld.sprayProgramme.events) || []), ev] } });
@@ -3729,13 +3647,18 @@ function PepperWorkspace({
             const fld = activeField || fields[0];
             onUpdateField(fld.id, { sprayProgramme: { events: [...((fld.sprayProgramme && fld.sprayProgramme.events) || []), ...events] } });
           }}
-          onLoadTemplate={() => {
+          onLoadTemplate={(key) => {
             const fld = activeField || fields[0];
-            onUpdateField(fld.id, { sprayProgramme: { events: loadBellPepperTemplate() } });
+            onUpdateField(fld.id, { programmeKey: key, sprayProgramme: { events: PROGRAMME_TEMPLATES[key].build() } });
           }}
-          onUploadCsv={(events) => {
+          onUploadCsv={(events, replace) => {
             const fld = activeField || fields[0];
-            onUpdateField(fld.id, { sprayProgramme: { events: [...((fld.sprayProgramme && fld.sprayProgramme.events) || []), ...events] } });
+            const prior = replace ? [] : ((fld.sprayProgramme && fld.sprayProgramme.events) || []);
+            onUpdateField(fld.id, { sprayProgramme: { events: [...prior, ...events] } });
+          }}
+          onClearProgramme={() => {
+            const fld = activeField || fields[0];
+            onUpdateField(fld.id, { sprayProgramme: { events: [] } });
           }}
           onDeleteEvent={(eventId) => {
             const fld = activeField || fields[0];
@@ -3808,22 +3731,29 @@ function PepperWorkspace({
         />
       )}
 
-      {modal === 'add-field' && (
-        <AddFieldForm
-          defaultName={`Field ${fields.length + 1}`}
-          existingNames={fields.map((f) => f.name)}
+      {(modal === 'field' || (modal && modal.startsWith('field:'))) && (
+        <FieldForm
+          field={modal === 'field' ? null : fields.find((f) => f.id === modal.split(':')[1])}
           onClose={() => setModal(null)}
-          onSave={(name) => { const id = onAddField(name); setScope(id); setModal(`field:${id}`); }}
+          onSave={(saved) => {
+            if (modal === 'field') {
+              toastAutoProgramme(null, saved);
+              onAddField(saved);
+            } else {
+              const id = modal.split(':')[1];
+              const prior = fields.find((f) => f.id === id);
+              toastAutoProgramme(prior, { ...prior, ...saved });
+              onUpdateField(id, saved);
+            }
+            setModal(null);
+          }}
         />
       )}
-      {modal && modal.startsWith('field:') && fields.find((f) => f.id === modal.split(':')[1]) && (
-        <FieldForm
-          field={fields.find((f) => f.id === modal.split(':')[1])}
+      {modal === 'rename-module' && (
+        <ModuleNameForm
+          name={moduleName}
           onClose={() => setModal(null)}
-          onSave={(patch) => { onUpdateField(modal.split(':')[1], patch); setModal(null); }}
-          canDelete={fields.length > 1 && !fieldHasRecords(pepper, modal.split(':')[1])}
-          deleteBlockedReason={fields.length <= 1 ? 'A farm needs at least one field.' : (fieldHasRecords(pepper, modal.split(':')[1]) ? 'This field has scouting, spray, harvest, soil or batch records, so it cannot be deleted.' : '')}
-          onDelete={() => { const id = modal.split(':')[1]; if (scope === id) setScope('all'); onDeleteField(id); setModal(null); }}
+          onSave={(name) => { onRenameModule(name); setModal(null); }}
         />
       )}
       {modal === 'scout' && (
@@ -3860,7 +3790,11 @@ function PepperWorkspace({
         <NewBatchForm
           field={fields.find((f) => f.id === modal.split(':')[1])}
           onClose={() => setModal(null)}
-          onSave={(patch) => { onStartNewBatch(modal.split(':')[1], patch); setModal(null); }}
+          onSave={(patch) => {
+            const id = modal.split(':')[1];
+            setModal(null);
+            startBatchFlow(id, patch, (fresh) => onStartNewBatch(id, patch, fresh));
+          }}
         />
       )}
       {(modal === 'nursery' || (typeof modal === 'string' && modal.startsWith('nursery:'))) && (
@@ -3880,8 +3814,9 @@ function PepperWorkspace({
           fields={fields}
           onClose={() => setModal(null)}
           onSave={(fieldId, patch) => {
-            onTransplantNurseryBatch(modal.split(':')[1], fieldId, patch);
+            const nurseryId = modal.split(':')[1];
             setModal(null);
+            startBatchFlow(fieldId, patch, (fresh) => onTransplantNurseryBatch(nurseryId, fieldId, patch, fresh));
           }}
         />
       )}
@@ -3915,7 +3850,7 @@ function PepperDashboard({
   return (
     <>
       <div className="grid grid-4">
-        <StatCard title="Plant Stand" value={num(totalPlants)} tone="green" foot={scope === 'all' ? 'all fields' : 'in this field'} />
+        <StatCard title="Plant Stand" value={num(totalPlants)} tone="green" foot={scope === 'all' ? 'both fields' : 'in this field'} />
         <StatCard
           title="Pest Pressure"
           value={latestScout ? latestScout.severity : 'None yet'}
@@ -4030,11 +3965,13 @@ function PepperDashboard({
 
 /* ---------------- Crop cycle ---------------- */
 
-function CropCycleTab({ fields, datOf, onEdit, onNewBatch }) {
+function CropCycleTab({ fields, datOf, onEdit, onNewBatch, onAdd, onDelete }) {
+  const { askConfirm } = useToastConfirm();
   return (
     <>
       <div className="panel-head" style={{ marginBottom: 14 }}>
         <h3 style={{ fontSize: 18 }}>Crop Cycle</h3>
+        {onAdd && <button className="btn btn-green" onClick={onAdd}>+ Add field</button>}
       </div>
       <div className="field-card-grid">
         {fields.map((f) => {
@@ -4052,15 +3989,26 @@ function CropCycleTab({ fields, datOf, onEdit, onNewBatch }) {
                 </span>
               </div>
               <div style={{ padding: '4px 0 10px' }}>
+                <div className="kv"><span className="k">Programme</span><span className="v">{(PROGRAMME_TEMPLATES[f.programmeKey] || {}).label || 'None'}</span></div>
                 <div className="kv"><span className="k">Variety</span><span className="v">{f.variety || '—'}</span></div>
-                <div className="kv"><span className="k">Transplanted</span><span className="v">{f.transplantDate ? fmtDate(f.transplantDate) : '—'}</span></div>
-                <div className="kv"><span className="k">Days after transplant</span><span className="v">{dat != null ? `${dat} (Wk ${week})` : '—'}</span></div>
+                <div className="kv"><span className="k">Transplanted / sown</span><span className="v">{f.transplantDate ? fmtDate(f.transplantDate) : '—'}</span></div>
+                <div className="kv"><span className="k">Days after planting</span><span className="v">{dat != null ? `${dat} (Wk ${week})` : '—'}</span></div>
                 <div className="kv"><span className="k">Plants in ground</span><span className="v">{num(f.plantCount)}</span></div>
                 <div className="kv"><span className="k">Spacing</span><span className="v">{f.spacing || '—'}</span></div>
                 <div className="kv"><span className="k">Expected 1st harvest</span><span className="v">{firstHarvest ? `${fmtDate(firstHarvest)}${toHarvest != null ? (toHarvest > 0 ? ` (${toHarvest}d)` : ' (due)') : ''}` : '—'}</span></div>
                 <div className="kv"><span className="k">Setup cost</span><span className="v">{f.setupCost != null ? `GH₵ ${num(f.setupCost, 2)}` : '—'}</span></div>
                 <div className="kv"><span className="k">Manure applied</span><span className="v">{f.manureAppliedDate ? fmtDate(f.manureAppliedDate) : '—'}</span></div>
                 {f.notes && <div className="kv"><span className="k">Notes</span><span className="v" style={{ textAlign: 'right' }}>{f.notes}</span></div>}
+                {onDelete && (
+                  <div style={{ marginTop: 10, textAlign: 'right' }}>
+                    <button
+                      className="link-btn rust"
+                      onClick={async () => {
+                        if (await askConfirm(`Delete ${f.name}? Its spray programme and history go with it.`)) onDelete(f.id);
+                      }}
+                    >Delete field</button>
+                  </div>
+                )}
               </div>
             </div>
           );
@@ -4069,6 +4017,7 @@ function CropCycleTab({ fields, datOf, onEdit, onNewBatch }) {
       <p className="stat-foot" style={{ marginTop: 14 }}>
         Bell peppers usually reach first harvest around 60–90 days after transplant; the default is set to 70. Adjust per field once you see how your crop runs.
         Starting a <strong>New Batch</strong> archives the current planting to Soil &amp; Batches → Batch Performance and begins the next one.
+        Field names (and this module's own name, up at the top) are yours to rename any time — this isn't limited to peppers.
       </p>
     </>
   );
@@ -4142,12 +4091,14 @@ function pepperStageForWeek(week) {
 const PEPPER_CAT_LABEL = {
   transplant: 'Transplant', nutrition: 'Nutrition', pesticide: 'Pesticide', fungicide: 'Fungicide',
   neem: 'Neem Oil (5pm)', transition: 'Transition', flowering: 'Flowering', fruiting: 'Fruiting', harvest: 'Harvest',
+  sowing: 'Sowing', practice: 'Farm practice', monitoring: 'Scouting',
 };
 
 // What each category becomes in the Spray & Fertigation log's own Type field.
 const PEPPER_CAT_SPRAY_TYPE = {
   transplant: 'Insecticide', nutrition: 'Foliar feed', pesticide: 'Insecticide', fungicide: 'Fungicide',
   neem: 'Insecticide', transition: 'Foliar feed', flowering: 'Foliar feed', fruiting: 'Foliar feed', harvest: 'Other',
+  sowing: 'Other', practice: 'Other', monitoring: 'Other',
 };
 
 const PEPPER_RATES = {
@@ -4172,6 +4123,7 @@ const PEPPER_RATES = {
 const SPRAY_CAT_TONE = {
   transplant: 'gold', nutrition: 'green', pesticide: 'rust', fungicide: 'gold',
   neem: 'green', transition: 'gold', flowering: 'gold', fruiting: 'rust', harvest: 'green',
+  sowing: 'green', practice: '', monitoring: 'gold',
 };
 
 /** Turns stored events (each carrying either a dayOffset from an anchor, or
@@ -4210,6 +4162,58 @@ function loadBellPepperTemplate() {
     id: newId(), dayOffset: ev.day, title: ev.title, cat: ev.cat,
     rate: PEPPER_RATES[ev.cat] || null, phi: null, notes: null,
   }));
+}
+
+/** Same idea for the cucumber programme — day-offset events from sowing day,
+    with rate AND notes baked onto each so they're fully self-contained. */
+function loadCucumberTemplate() {
+  return CUCUMBER_PROGRAMME
+    .map((ev, i) => ({ ev, i }))
+    .sort((a, b) => a.ev.day - b.ev.day || a.i - b.i)
+    .map(({ ev }) => ({
+      id: newId(), dayOffset: ev.day, title: ev.title, cat: ev.cat,
+      rate: ev.rate || null, phi: ev.phi == null ? null : ev.phi, notes: ev.notes || null,
+    }));
+}
+
+const PEPPER_RULES_TEXT =
+  'Key rules: never mix Neem with Sulfur · stop Urea after Day 36 (the final Urea foliar) · ' +
+  'CalMag joins every spray from Day 42 onward · check temperature is under 30°C before any Alt Sulfur application.';
+
+/** Built-in crop programmes. A field's `programmeKey` picks one; the day-0
+    anchor is always that field's planting date (transplant or sowing). */
+const PROGRAMME_TEMPLATES = {
+  bell_pepper: {
+    label: 'Bell Pepper', build: loadBellPepperTemplate, defaultHarvestDAT: 70,
+    stageForWeek: pepperStageForWeek, rules: PEPPER_RULES_TEXT,
+  },
+  cucumber: {
+    label: 'Cucumber', build: loadCucumberTemplate, defaultHarvestDAT: 40,
+    stageForWeek: cucumberStageForWeek, rules: CUCUMBER_RULES,
+  },
+};
+
+function programmeEventsOf(field) {
+  return (field && field.sprayProgramme && field.sprayProgramme.events) || [];
+}
+
+/** Decides whether saving `next` (on top of `prev`) should auto-load the
+    field's programme. Only when the field has a programme type, a planting
+    date, and NO events — and only when the date or the type just changed, so
+    a farmer who cleared the programme on purpose isn't surprised by it
+    reappearing on an unrelated edit. Returns the template key or null. */
+function autoProgrammeKey(prev, next) {
+  const key = next && next.programmeKey;
+  if (!key || !PROGRAMME_TEMPLATES[key]) return null;
+  if (!next.transplantDate) return null;
+  if (programmeEventsOf(next).length > 0) return null;
+  const changed = !prev || prev.transplantDate !== next.transplantDate || prev.programmeKey !== next.programmeKey;
+  return changed ? key : null;
+}
+
+function withAutoProgramme(prev, next) {
+  const key = autoProgrammeKey(prev, next);
+  return key ? { ...next, sprayProgramme: { events: PROGRAMME_TEMPLATES[key].build() } } : next;
 }
 
 /** Parses an uploaded CSV into spray events. Expected columns (header row
@@ -4251,8 +4255,8 @@ function parseSprayCsv(rows) {
 }
 
 function SprayProgrammeTab({
-  field, reminders, onAddReminder, onLogNow, showPepperRules,
-  onAddEvent, onAddPattern, onLoadTemplate, onUploadCsv, onDeleteEvent,
+  field, reminders, onAddReminder, onLogNow,
+  onAddEvent, onAddPattern, onLoadTemplate, onUploadCsv, onDeleteEvent, onClearProgramme,
 }) {
   const { showToast, askConfirm } = useToastConfirm();
   const [filter, setFilter] = useState('all');
@@ -4265,6 +4269,7 @@ function SprayProgrammeTab({
   }
 
   const anchor = field.transplantDate || null;
+  const tpl = PROGRAMME_TEMPLATES[field.programmeKey] || null;
   const rawEvents = (field.sprayProgramme && field.sprayProgramme.events) || [];
   const resolved = materializeSprayEvents(rawEvents, anchor).map((ev) => ({
     ...ev,
@@ -4303,13 +4308,21 @@ function SprayProgrammeTab({
     if (!file) return;
     Papa.parse(file, {
       header: true, skipEmptyLines: true,
-      complete: (results) => {
+      complete: async (results) => {
         const { events, errors } = parseSprayCsv(results.data);
-        if (events.length) onUploadCsv(events);
+        if (!events.length) {
+          if (errors.length) showToast(`Nothing imported — ${errors.slice(0, 2).join('; ')}${errors.length > 2 ? '…' : ''}`, 'rust');
+          return;
+        }
+        let replace = false;
+        if (resolved.length > 0) {
+          replace = await askConfirm(`${field.name} already has ${resolved.length} event(s). Replace them with this CSV's ${events.length} event(s)? Cancel adds these to what's already there instead.`);
+        }
+        onUploadCsv(events, replace);
         if (errors.length) {
-          showToast(`Imported ${events.length} event(s), skipped ${errors.length}: ${errors.slice(0, 2).join('; ')}${errors.length > 2 ? '…' : ''}`, events.length ? 'gold' : 'rust');
+          showToast(`Imported ${events.length} event(s)${replace ? ' (replaced existing)' : ''}, skipped ${errors.length}: ${errors.slice(0, 2).join('; ')}${errors.length > 2 ? '…' : ''}`, 'gold');
         } else {
-          showToast(`Imported ${events.length} event(s) from CSV.`, 'green');
+          showToast(`Imported ${events.length} event(s) from CSV${replace ? ' (replaced existing)' : ''}.`, 'green');
         }
       },
       error: () => showToast('Could not read that CSV file.', 'rust'),
@@ -4339,7 +4352,12 @@ function SprayProgrammeTab({
             {isOpen && (
               <>
                 <div className="stat-foot" style={{ marginTop: 8, padding: '8px 10px', background: 'var(--bg-alt)', borderRadius: 6, borderLeft: '3px solid var(--gold-dim)' }}>
-                  {ev.rate || ev.notes || 'No rate/notes recorded for this event.'}
+                  {ev.rate || ev.notes ? (
+                    <>
+                      {ev.rate && <div>{ev.rate}</div>}
+                      {ev.notes && <div style={{ marginTop: ev.rate ? 6 : 0, opacity: 0.85 }}>{ev.notes}</div>}
+                    </>
+                  ) : 'No rate/notes recorded for this event.'}
                 </div>
                 <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
                   <button
@@ -4378,7 +4396,7 @@ function SprayProgrammeTab({
       </div>
       <p className="stat-foot" style={{ marginTop: 0, marginBottom: 14 }}>
         {anchor
-          ? <>Anchored to {fmtDate(anchor)} — day-offset events below are computed from this date.</>
+          ? <>Day 0 = {fmtDate(anchor)} (this field's planting date) — day-offset events below are computed from it.</>
           : <>No start/transplant date set for {field.name} yet — day-offset events will show once you set one; events with their own fixed date still work regardless.</>}
         {' '}This is a plan, not a log — record what you actually spray in <strong>Spray &amp; Fertigation</strong> as you go.
       </p>
@@ -4387,16 +4405,39 @@ function SprayProgrammeTab({
         <button className="btn" onClick={() => setModal('event')}>+ Add event</button>
         <button className="btn" onClick={() => setModal('pattern')}>+ Repeating pattern</button>
         <button className="btn" onClick={() => fileRef.current && fileRef.current.click()}>⤒ Upload CSV</button>
-        <button className="btn btn-gold" onClick={() => { onLoadTemplate(); showToast('Loaded the standard Bell Pepper 14-week programme.', 'green'); }}>
-          Load Bell Pepper template
-        </button>
+        {Object.entries(PROGRAMME_TEMPLATES).map(([key, t]) => (
+          <button
+            key={key}
+            className={`btn ${field.programmeKey === key ? 'btn-gold' : ''}`}
+            onClick={async () => {
+              if (resolved.length > 0 && !(await askConfirm(`Replace ${field.name}'s ${resolved.length} current event(s) with the ${t.label} programme?`, { danger: false, confirmLabel: 'Replace' }))) return;
+              onLoadTemplate(key);
+              showToast(`Loaded the ${t.label} programme (${t.build().length} events).`, 'green');
+            }}
+          >
+            Load {t.label} template
+          </button>
+        ))}
+        {resolved.length > 0 && (
+          <button
+            className="link-btn rust"
+            onClick={async () => {
+              if (await askConfirm(`Clear all ${resolved.length} events from ${field.name}'s programme? This can't be undone — do this before uploading a CSV or loading a template if you want to replace rather than add to what's here.`)) {
+                onClearProgramme();
+                showToast('Programme cleared.', 'default');
+              }
+            }}
+          >
+            Clear programme
+          </button>
+        )}
         <input ref={fileRef} type="file" accept=".csv" style={{ display: 'none' }} onChange={handleCsvFile} />
       </div>
 
       {resolved.length === 0 ? (
         <p className="empty" style={{ padding: '18px 0' }}>
           No spray programme yet for {field.name} — add events by hand, generate a repeating pattern,
-          upload a CSV, or load the Bell Pepper standard template as a starting point to edit from.
+          upload a CSV, or load the Bell Pepper or Cucumber template as a starting point to edit from.
         </p>
       ) : (
         <>
@@ -4413,7 +4454,7 @@ function SprayProgrammeTab({
             return (
               <div key={wk} style={{ marginBottom: 16 }}>
                 <div className="panel-head" style={{ marginBottom: 8 }}>
-                  <h3 style={{ fontSize: 14 }}>Week {wk}{showPepperRules ? ` · ${pepperStageForWeek(wk)}` : ''}</h3>
+                  <h3 style={{ fontSize: 14 }}>Week {wk}{tpl ? ` · ${tpl.stageForWeek(wk)}` : ''}</h3>
                   <span className="stat-foot" style={{ margin: 0 }}>{wkEvents.length} event{wkEvents.length > 1 ? 's' : ''}</span>
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -4440,13 +4481,9 @@ function SprayProgrammeTab({
             ))}
           </div>
 
-          {showPepperRules && (
+          {tpl && (
             <div className="stale-banner" style={{ marginTop: 18 }}>
-              ⚠ <span>
-                Key rules: never mix Neem with Sulfur · stop Urea after Day 36 (the final Urea foliar) ·
-                CalMag joins every spray from Day 42 onward · check temperature is under 30°C before any
-                Alt Sulfur application.
-              </span>
+              ⚠ <span>{tpl.rules}</span>
             </div>
           )}
         </>
@@ -4560,25 +4597,47 @@ function SprayPatternForm({ onClose, onSave }) {
 }
 
 
-function FieldForm({ field, onClose, onSave, onDelete, canDelete, deleteBlockedReason }) {
+/** Picks which built-in programme a field follows. The programme loads on its
+    own the first time a planting date is set on a field with an empty one. */
+function ProgrammeSelect({ value, onChange }) {
+  return (
+    <>
+      <select value={value || ''} onChange={(e) => onChange(e.target.value)}>
+        <option value="">None — I'll build my own</option>
+        {Object.entries(PROGRAMME_TEMPLATES).map(([key, t]) => <option key={key} value={key}>{t.label}</option>)}
+      </select>
+      <span className="stat-foot" style={{ display: 'block', margin: '4px 0 0' }}>
+        Loads automatically when you set a planting date and the field has no programme yet. Day 0 is that date.
+      </span>
+    </>
+  );
+}
+
+function FieldForm({ field, onClose, onSave }) {
+  const isNew = !field;
+  const soilDefaults = fieldSoilDefaults();
   const [section, setSection] = useState('crop'); // 'crop' | 'soil'
   const [f, setF] = useState({
-    name: field.name || '',
-    variety: field.variety || '', transplantDate: field.transplantDate || '',
-    plantCount: field.plantCount ?? '', spacing: field.spacing || '',
-    expectedHarvestDAT: field.expectedHarvestDAT ?? 70, setupCost: field.setupCost ?? '', notes: field.notes || '',
-    manureAppliedDate: field.manureAppliedDate || '',
-    targetECMin: field.targetECMin ?? '', targetECMax: field.targetECMax ?? '',
-    targetPHMin: field.targetPHMin ?? '', targetPHMax: field.targetPHMax ?? '',
-    targetNMin: field.targetNMin ?? '', targetNMax: field.targetNMax ?? '',
-    targetPMin: field.targetPMin ?? '', targetPMax: field.targetPMax ?? '',
-    targetKMin: field.targetKMin ?? '', targetKMax: field.targetKMax ?? '',
+    name: field?.name || '',
+    programmeKey: field ? (field.programmeKey || '') : 'bell_pepper',
+    variety: field?.variety || '', transplantDate: field?.transplantDate || '',
+    plantCount: field?.plantCount ?? '', spacing: field?.spacing || '',
+    expectedHarvestDAT: field?.expectedHarvestDAT ?? 70, setupCost: field?.setupCost ?? '', notes: field?.notes || '',
+    manureAppliedDate: field?.manureAppliedDate || '',
+    targetECMin: field?.targetECMin ?? soilDefaults.targetECMin, targetECMax: field?.targetECMax ?? soilDefaults.targetECMax,
+    targetPHMin: field?.targetPHMin ?? soilDefaults.targetPHMin, targetPHMax: field?.targetPHMax ?? soilDefaults.targetPHMax,
+    targetNMin: field?.targetNMin ?? soilDefaults.targetNMin, targetNMax: field?.targetNMax ?? soilDefaults.targetNMax,
+    targetPMin: field?.targetPMin ?? soilDefaults.targetPMin, targetPMax: field?.targetPMax ?? soilDefaults.targetPMax,
+    targetKMin: field?.targetKMin ?? soilDefaults.targetKMin, targetKMax: field?.targetKMax ?? soilDefaults.targetKMax,
   });
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   const num2 = (v) => (v === '' ? null : Number(v));
   function submit() {
+    if (!f.name.trim()) return;
     onSave({
-      name: (f.name || '').trim() || field.name,
+      id: field?.id || newId(),
+      name: f.name.trim(),
+      programmeKey: f.programmeKey || '',
       variety: f.variety || '', transplantDate: f.transplantDate || '',
       plantCount: f.plantCount === '' ? null : Number(f.plantCount),
       spacing: f.spacing || '',
@@ -4591,10 +4650,16 @@ function FieldForm({ field, onClose, onSave, onDelete, canDelete, deleteBlockedR
       targetNMin: num2(f.targetNMin), targetNMax: num2(f.targetNMax),
       targetPMin: num2(f.targetPMin), targetPMax: num2(f.targetPMax),
       targetKMin: num2(f.targetKMin), targetKMax: num2(f.targetKMax),
+      currentBatchLabel: field?.currentBatchLabel || 'Batch 1',
+      sprayProgramme: field?.sprayProgramme || { events: [] },
     });
   }
   return (
-    <Modal title={`Edit ${field.name}`} sub="Crop cycle details and soil targets for this field." onClose={onClose}>
+    <Modal
+      title={isNew ? 'Add a field' : `Edit ${field.name}`}
+      sub="Crop cycle details and soil targets for this field."
+      onClose={onClose}
+    >
       <div className="kind-toggle">
         <button className={section === 'crop' ? 'active' : ''} onClick={() => setSection('crop')}>Crop cycle</button>
         <button className={section === 'soil' ? 'active' : ''} onClick={() => setSection('soil')}>Soil targets</button>
@@ -4602,9 +4667,24 @@ function FieldForm({ field, onClose, onSave, onDelete, canDelete, deleteBlockedR
 
       {section === 'crop' ? (
         <div className="form-grid">
-          <Field label="Field name" span2><input value={f.name} onChange={set('name')} placeholder="e.g. Field C, North plot" /></Field>
+          <Field label="Field name" span2>
+            <input value={f.name} onChange={set('name')} placeholder="e.g. Field A, Plot 1, Tomato patch" />
+          </Field>
+          <Field label="Crop programme" span2>
+            <ProgrammeSelect
+              value={f.programmeKey}
+              onChange={(key) => {
+                // Move the harvest-timing default along with the crop, but only
+                // if the farmer hasn't typed their own number.
+                const prevDefault = (PROGRAMME_TEMPLATES[f.programmeKey] || {}).defaultHarvestDAT;
+                const untouched = f.expectedHarvestDAT === '' || Number(f.expectedHarvestDAT) === (prevDefault ?? 70);
+                const nextDefault = (PROGRAMME_TEMPLATES[key] || {}).defaultHarvestDAT;
+                setF({ ...f, programmeKey: key, expectedHarvestDAT: untouched && nextDefault ? nextDefault : f.expectedHarvestDAT });
+              }}
+            />
+          </Field>
           <Field label="Variety"><input value={f.variety} onChange={set('variety')} placeholder="e.g. California Wonder" /></Field>
-          <Field label="Transplant date"><input type="date" value={f.transplantDate} onChange={set('transplantDate')} /></Field>
+          <Field label="Transplant / sowing date (Day 0)"><input type="date" value={f.transplantDate} onChange={set('transplantDate')} /></Field>
           <Field label="Plants in ground"><input type="number" value={f.plantCount} onChange={set('plantCount')} /></Field>
           <Field label="Spacing"><input value={f.spacing} onChange={set('spacing')} placeholder="e.g. 45cm × 60cm" /></Field>
           <Field label="Expected 1st harvest (DAT)"><input type="number" value={f.expectedHarvestDAT} onChange={set('expectedHarvestDAT')} /></Field>
@@ -4633,40 +4713,9 @@ function FieldForm({ field, onClose, onSave, onDelete, canDelete, deleteBlockedR
         </>
       )}
 
-      {onDelete && (
-        <p className="stat-foot" style={{ marginTop: 12 }}>
-          {canDelete
-            ? <button className="btn" onClick={() => { if (window.confirm(`Delete ${field.name}? This cannot be undone.`)) onDelete(); }}>Delete this field</button>
-            : deleteBlockedReason}
-        </p>
-      )}
       <div className="modal-actions">
         <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
-        <button className="btn btn-green" onClick={submit}>Save field</button>
-      </div>
-    </Modal>
-  );
-}
-
-/** True when any record still points at this field, so deleting it would orphan data. */
-function fieldHasRecords(pepper, fieldId) {
-  const hit = (arr) => (arr || []).some((r) => r.fieldId === fieldId || r.transplantedToFieldId === fieldId);
-  return hit(pepper.scouting) || hit(pepper.sprays) || hit(pepper.harvests) || hit(pepper.soilReadings)
-    || hit(pepper.batches) || hit(pepper.nurseryBatches);
-}
-
-function AddFieldForm({ defaultName, existingNames, onClose, onSave }) {
-  const [name, setName] = useState(defaultName);
-  const clash = existingNames.some((n) => n.trim().toLowerCase() === name.trim().toLowerCase());
-  return (
-    <Modal title="Add field" sub="A new field gets its own crop cycle, spray programme, soil targets and records." onClose={onClose}>
-      <div className="form-grid">
-        <Field label="Field name" span2><input value={name} onChange={(e) => setName(e.target.value)} autoFocus /></Field>
-      </div>
-      {clash && <p className="stat-foot">Another field already uses that name.</p>}
-      <div className="modal-actions">
-        <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
-        <button className="btn btn-green" disabled={!name.trim() || clash} onClick={() => onSave(name)}>Add field</button>
+        <button className="btn btn-green" onClick={submit} disabled={!f.name.trim()}>{isNew ? 'Add field' : 'Save field'}</button>
       </div>
     </Modal>
   );
@@ -4973,6 +5022,38 @@ function FarmProfileForm({ profile, onClose, onSave }) {
       <div className="modal-actions">
         <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
         <button className="btn btn-gold" onClick={submit} disabled={!f.farmName}>Save profile</button>
+      </div>
+    </Modal>
+  );
+}
+
+/** Renames a workspace module (e.g. "Bell Pepper" → "Crops") without
+    touching any of its data — just the label shown across the app. */
+function ModuleNameForm({ name, onClose, onSave }) {
+  const [value, setValue] = useState(name || '');
+  function submit() {
+    if (!value.trim()) return;
+    onSave(value.trim());
+  }
+  return (
+    <Modal
+      title="Rename this section"
+      sub="Changes the label shown here and in the top navigation — your fields and history are unaffected."
+      onClose={onClose}
+    >
+      <div className="form-grid">
+        <Field label="Section name" span2>
+          <input
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            placeholder="e.g. Crops"
+            autoFocus
+          />
+        </Field>
+      </div>
+      <div className="modal-actions">
+        <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+        <button className="btn btn-gold" onClick={submit} disabled={!value.trim()}>Save name</button>
       </div>
     </Modal>
   );
@@ -6096,7 +6177,7 @@ function buildExportDatasets(data) {
       ],
     },
     {
-      key: 'scouting', label: 'Bell Pepper — Scouting', rows: p.scouting || [],
+      key: 'scouting', label: `${p.moduleName || 'Bell Pepper'} — Scouting`, rows: p.scouting || [],
       columns: [
         { key: 'date', label: 'Date' }, { key: 'fieldId', label: 'Field', get: (r) => fieldName(r.fieldId) },
         { key: 'pest', label: 'Pest / Issue' }, { key: 'severity', label: 'Severity' },
@@ -6104,7 +6185,7 @@ function buildExportDatasets(data) {
       ],
     },
     {
-      key: 'sprays', label: 'Bell Pepper — Spray & Fertigation', rows: p.sprays || [],
+      key: 'sprays', label: `${p.moduleName || 'Bell Pepper'} — Spray & Fertigation`, rows: p.sprays || [],
       columns: [
         { key: 'date', label: 'Date' }, { key: 'fieldId', label: 'Field', get: (r) => fieldName(r.fieldId) },
         { key: 'type', label: 'Type' }, { key: 'product', label: 'Product' }, { key: 'activeIngredient', label: 'Active Ingredient' },
@@ -6113,7 +6194,7 @@ function buildExportDatasets(data) {
       ],
     },
     {
-      key: 'harvests', label: 'Bell Pepper — Harvest & Sales', rows: p.harvests || [],
+      key: 'harvests', label: `${p.moduleName || 'Bell Pepper'} — Harvest & Sales`, rows: p.harvests || [],
       columns: [
         { key: 'date', label: 'Date' }, { key: 'fieldId', label: 'Field', get: (r) => fieldName(r.fieldId) },
         { key: 'weightKg', label: 'Weight (kg)' }, { key: 'grade', label: 'Grade' }, { key: 'pricePerKg', label: 'Price/kg' },
@@ -6121,7 +6202,7 @@ function buildExportDatasets(data) {
       ],
     },
     {
-      key: 'manureReadings', label: 'Bell Pepper — Manure Readings', rows: p.manureReadings || [],
+      key: 'manureReadings', label: `${p.moduleName || 'Bell Pepper'} — Manure Readings`, rows: p.manureReadings || [],
       columns: [
         { key: 'date', label: 'Date' }, { key: 'location', label: 'Location' }, { key: 'moisture', label: 'Moisture %' },
         { key: 'ec', label: 'EC' }, { key: 'ph', label: 'pH' }, { key: 'n', label: 'N' }, { key: 'p', label: 'P' }, { key: 'k', label: 'K' },
@@ -6129,7 +6210,7 @@ function buildExportDatasets(data) {
       ],
     },
     {
-      key: 'soilReadings', label: 'Bell Pepper — Soil Readings', rows: p.soilReadings || [],
+      key: 'soilReadings', label: `${p.moduleName || 'Bell Pepper'} — Soil Readings`, rows: p.soilReadings || [],
       columns: [
         { key: 'date', label: 'Date' }, { key: 'fieldId', label: 'Field', get: (r) => fieldName(r.fieldId) },
         { key: 'location', label: 'Location' }, { key: 'moisture', label: 'Moisture %' },
@@ -6138,7 +6219,7 @@ function buildExportDatasets(data) {
       ],
     },
     {
-      key: 'batches', label: 'Bell Pepper — Planting Batches', rows: p.batches || [],
+      key: 'batches', label: `${p.moduleName || 'Bell Pepper'} — Planting Batches`, rows: p.batches || [],
       columns: [
         { key: 'fieldId', label: 'Field', get: (r) => fieldName(r.fieldId) }, { key: 'batchLabel', label: 'Batch' },
         { key: 'variety', label: 'Variety' }, { key: 'transplantDate', label: 'Transplanted' },
@@ -6147,7 +6228,7 @@ function buildExportDatasets(data) {
       ],
     },
     {
-      key: 'nurseryBatches', label: 'Bell Pepper — Nursery', rows: p.nurseryBatches || [],
+      key: 'nurseryBatches', label: `${p.moduleName || 'Bell Pepper'} — Nursery`, rows: p.nurseryBatches || [],
       columns: [
         { key: 'batchLabel', label: 'Batch' }, { key: 'variety', label: 'Variety' }, { key: 'seedSowDate', label: 'Sown' },
         { key: 'method', label: 'Method' }, { key: 'quantitySown', label: 'Qty Sown' },
@@ -6159,7 +6240,7 @@ function buildExportDatasets(data) {
       ],
     },
     {
-      key: 'inputs', label: 'Bell Pepper — Input Stock', rows: p.inputs || [],
+      key: 'inputs', label: `${p.moduleName || 'Bell Pepper'} — Input Stock`, rows: p.inputs || [],
       columns: [
         { key: 'name', label: 'Name' }, { key: 'type', label: 'Type' }, { key: 'activeIngredient', label: 'Active Ingredient' },
         { key: 'quantity', label: 'Quantity' }, { key: 'unit', label: 'Unit' }, { key: 'reorderAt', label: 'Reorder At' },
@@ -7919,7 +8000,7 @@ function CropFarmDetail({
   farm, reminders, onAddField, onUpdateField, onDeleteField, onAddReminder,
   onAddScouting, onDeleteScouting, onAddHarvest, onDeleteHarvest,
 }) {
-  const { askConfirm } = useToastConfirm();
+  const { showToast, askConfirm } = useToastConfirm();
   const [view, setView] = useState('fields'); // 'fields' | 'programme' | 'scouting' | 'harvest'
   const [modal, setModal] = useState(null);
   const [activeFieldId, setActiveFieldId] = useState(farm.fields?.[0]?.id || null);
@@ -7982,11 +8063,11 @@ function CropFarmDetail({
               reminders={reminders}
               onAddReminder={onAddReminder}
               onLogNow={() => {}}
-              showPepperRules={false}
               onAddEvent={(ev) => onUpdateField(activeField.id, { sprayProgramme: { events: [...((activeField.sprayProgramme && activeField.sprayProgramme.events) || []), ev] } })}
               onAddPattern={(events) => onUpdateField(activeField.id, { sprayProgramme: { events: [...((activeField.sprayProgramme && activeField.sprayProgramme.events) || []), ...events] } })}
-              onLoadTemplate={() => onUpdateField(activeField.id, { sprayProgramme: { events: loadBellPepperTemplate() } })}
-              onUploadCsv={(events) => onUpdateField(activeField.id, { sprayProgramme: { events: [...((activeField.sprayProgramme && activeField.sprayProgramme.events) || []), ...events] } })}
+              onLoadTemplate={(key) => onUpdateField(activeField.id, { programmeKey: key, sprayProgramme: { events: PROGRAMME_TEMPLATES[key].build() } })}
+              onUploadCsv={(events, replace) => onUpdateField(activeField.id, { sprayProgramme: { events: [...(replace ? [] : ((activeField.sprayProgramme && activeField.sprayProgramme.events) || [])), ...events] } })}
+              onClearProgramme={() => onUpdateField(activeField.id, { sprayProgramme: { events: [] } })}
               onDeleteEvent={(eventId) => onUpdateField(activeField.id, { sprayProgramme: { events: ((activeField.sprayProgramme && activeField.sprayProgramme.events) || []).filter((e) => e.id !== eventId) } })}
             />
           </>
@@ -8014,7 +8095,13 @@ function CropFarmDetail({
           field={typeof modal === 'string' && modal.startsWith('field:') ? fields.find((fl) => fl.id === modal.split(':')[1]) : null}
           onClose={() => setModal(null)}
           onSave={(fl) => {
-            if (fl.id && fields.some((x) => x.id === fl.id)) onUpdateField(fl.id, fl);
+            const prior = fields.find((x) => x.id === fl.id);
+            const key = autoProgrammeKey(prior || null, { ...(prior || {}), ...fl });
+            if (key) {
+              const t = PROGRAMME_TEMPLATES[key];
+              showToast(`Loaded the ${t.label} programme (${t.build().length} events) — Day 0 is ${fmtDate(fl.transplantDate)}.`, 'green');
+            }
+            if (prior) onUpdateField(fl.id, fl);
             else onAddField(fl);
             setModal(null);
           }}
@@ -8044,6 +8131,7 @@ function CustomFieldForm({ field, onClose, onSave }) {
   const isEdit = Boolean(field);
   const [f, setF] = useState({
     name: field?.name || '', sizeAcres: field?.sizeAcres ?? '',
+    programmeKey: field?.programmeKey || '',
     transplantDate: field?.transplantDate || '', notes: field?.notes || '',
   });
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
@@ -8051,6 +8139,7 @@ function CustomFieldForm({ field, onClose, onSave }) {
     if (!f.name) return;
     onSave({
       id: field?.id || newId(), name: f.name,
+      programmeKey: f.programmeKey || '',
       sizeAcres: f.sizeAcres === '' ? null : Number(f.sizeAcres),
       transplantDate: f.transplantDate || '', notes: f.notes || '',
       sprayProgramme: field?.sprayProgramme || { events: [] },
@@ -8060,8 +8149,11 @@ function CustomFieldForm({ field, onClose, onSave }) {
     <Modal title={isEdit ? `Edit ${field.name}` : 'Add a field'} onClose={onClose}>
       <div className="form-grid">
         <Field label="Field name" span2><input value={f.name} onChange={set('name')} placeholder="e.g. Plot 1" /></Field>
+        <Field label="Crop programme" span2>
+          <ProgrammeSelect value={f.programmeKey} onChange={(key) => setF({ ...f, programmeKey: key })} />
+        </Field>
         <Field label="Size (acres)"><input type="number" step="0.1" value={f.sizeAcres} onChange={set('sizeAcres')} /></Field>
-        <Field label="Planting / start date"><input type="date" value={f.transplantDate} onChange={set('transplantDate')} /></Field>
+        <Field label="Planting / sowing date (Day 0)"><input type="date" value={f.transplantDate} onChange={set('transplantDate')} /></Field>
         <Field label="Notes" span2><textarea rows={2} value={f.notes} onChange={set('notes')} /></Field>
       </div>
       <div className="modal-actions">
@@ -9991,6 +10083,7 @@ function SoilReadingForm({ fields, defaultField, onClose, onSave }) {
 function NewBatchForm({ field, onClose, onSave }) {
   const [f, setF] = useState({
     batchLabel: '', variety: '', transplantDate: todayISO(), plantCount: '', spacing: field?.spacing || '',
+    programmeKey: field?.programmeKey || '',
     expectedHarvestDAT: field?.expectedHarvestDAT ?? 70, setupCost: '', manureAppliedDate: '', notes: '',
   });
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
@@ -9999,6 +10092,7 @@ function NewBatchForm({ field, onClose, onSave }) {
     if (!f.transplantDate) return;
     onSave({
       currentBatchLabel: f.batchLabel || 'New batch',
+      programmeKey: f.programmeKey || '',
       variety: f.variety || '', transplantDate: f.transplantDate,
       plantCount: f.plantCount === '' ? null : Number(f.plantCount),
       spacing: f.spacing || '',
@@ -10018,8 +10112,19 @@ function NewBatchForm({ field, onClose, onSave }) {
     >
       <div className="form-grid">
         <Field label="Batch label" span2><input value={f.batchLabel} onChange={set('batchLabel')} placeholder="e.g. Batch 2 — dry season" /></Field>
+        <Field label="Crop programme" span2>
+          <ProgrammeSelect
+            value={f.programmeKey}
+            onChange={(key) => {
+              const prevDefault = (PROGRAMME_TEMPLATES[f.programmeKey] || {}).defaultHarvestDAT;
+              const untouched = f.expectedHarvestDAT === '' || Number(f.expectedHarvestDAT) === (prevDefault ?? 70);
+              const nextDefault = (PROGRAMME_TEMPLATES[key] || {}).defaultHarvestDAT;
+              setF({ ...f, programmeKey: key, expectedHarvestDAT: untouched && nextDefault ? nextDefault : f.expectedHarvestDAT });
+            }}
+          />
+        </Field>
         <Field label="Variety"><input value={f.variety} onChange={set('variety')} /></Field>
-        <Field label="Transplant date"><input type="date" value={f.transplantDate} onChange={set('transplantDate')} /></Field>
+        <Field label="Transplant / sowing date (Day 0)"><input type="date" value={f.transplantDate} onChange={set('transplantDate')} /></Field>
         <Field label="Plants in ground"><input type="number" value={f.plantCount} onChange={set('plantCount')} /></Field>
         <Field label="Spacing"><input value={f.spacing} onChange={set('spacing')} /></Field>
         <Field label="Expected 1st harvest (DAT)"><input type="number" value={f.expectedHarvestDAT} onChange={set('expectedHarvestDAT')} /></Field>
@@ -10058,7 +10163,7 @@ function NurseryTab({ batches, fields, onAdd, onEdit, onDelete, onTransplant }) 
       </div>
       <p className="stat-foot" style={{ marginTop: 0, marginBottom: 18 }}>
         Track seedlings from sowing through germination to transplant-ready, before they ever reach
-        one of your fields. Typical bell pepper nursery duration is around 30 days, but every batch can set
+        Field A or B. Typical bell pepper nursery duration is around 30 days, but every batch can set
         its own.
       </p>
 
