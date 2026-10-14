@@ -3172,6 +3172,10 @@ function AppInner({ profileId, profileName, farmName, onSwitchProfile }) {
           coopInvested={coopInvested}
           flockRunning={flockRunning}
           flockPettyCost={flockPettyCost}
+          feedRecords={feed}
+          litterRecords={litter}
+          allPettyCosts={data.pettyCosts || []}
+          allFlockExpenses={flockExpenses}
           onAdd={() => setModal('sale')}
           onEditFlock={() => setModal(`flock:${activeFlock.id}`)}
           onInvoice={openInvoiceFromSale}
@@ -7141,15 +7145,37 @@ function LogPaymentModal({ sale, saleAmount, buyerName, onClose, onLogPayment, o
 
 /* ---------------- Sales & profit ---------------- */
 
-function SalesTab({ sales, flock, totalRevenue, flockMargin, totalFeedCost, litterCost, coopCharge, coopInvested, flockRunning, flockPettyCost, onAdd, onEditFlock, onInvoice, onUpdateSale, onLogPayment }) {
+function SalesTab({ sales, flock, totalRevenue, flockMargin, totalFeedCost, litterCost, coopCharge, coopInvested, flockRunning, flockPettyCost, feedRecords, litterRecords, allPettyCosts, allFlockExpenses, onAdd, onEditFlock, onInvoice, onUpdateSale, onLogPayment }) {
   const setup = Number(flock.setupCost) || 0;
-  const [payModal, setPayModal] = useState(null); // sale record being paid
+  const [payModal, setPayModal] = useState(null);
   const [period, setPeriod] = useState('all');
   const [customStart, setCustomStart] = useState('');
   const [customEnd, setCustomEnd] = useState('');
 
+  // Period-filtered sales
   const visibleSales = filterByPeriod(sales, period, customStart, customEnd);
-  const periodRevenue = visibleSales.reduce((s, r) => s + (Number(r.amount) || 0), 0);
+
+  // Period-filtered cost components — each source has a date field
+  const periodFeedCost  = filterByPeriod(feedRecords || [], period, customStart, customEnd)
+    .reduce((s, r) => s + (Number(r.cost) || 0), 0);
+  const periodLitterCost = filterByPeriod(litterRecords || [], period, customStart, customEnd)
+    .reduce((s, r) => s + (Number(r.cost) || 0), 0);
+  const periodPettyCost = filterByPeriod(
+    (allPettyCosts || []).filter((c) => c.farm === 'poultry'), period, customStart, customEnd
+  ).reduce((s, c) => s + (Number(c.amount) || 0), 0);
+  const periodRunning = filterByPeriod(
+    (allFlockExpenses || []).filter((e) => !e.capital), period, customStart, customEnd
+  ).reduce((s, e) => s + (Number(e.amount) || 0), 0);
+  // Setup cost and coop depreciation are one-off charges — only include in 'all time' view
+  const periodSetup  = period === 'all' ? setup : 0;
+  const periodCoop   = period === 'all' ? (coopCharge || 0) : 0;
+
+  const periodRevenue  = visibleSales.reduce((s, r) => s + (Number(r.amount) || 0), 0);
+  const periodTotalCost = periodFeedCost + periodLitterCost + periodPettyCost + periodRunning + periodSetup + periodCoop;
+  const periodProfit   = periodRevenue - periodTotalCost;
+
+  const isFiltered = period !== 'all';
+  const periodLabel = isFiltered ? PERIOD_OPTS.find((o) => o.value === period)?.label || period : 'All time';
 
   const totalOwed = sales.reduce((s, r) => {
     if ((r.paymentStatus || 'paid') === 'credit') s += calcOwed(r, Number(r.amount) || 0);
@@ -7158,21 +7184,47 @@ function SalesTab({ sales, flock, totalRevenue, flockMargin, totalFeedCost, litt
 
   return (
     <>
-      <div className="panel-head" style={{ marginBottom: 14 }}>
+      <div className="panel-head" style={{ marginBottom: 10 }}>
         <h3 style={{ fontSize: 18 }}>Sales &amp; Profit — {flock.flockName}</h3>
         <button className="btn btn-gold" onClick={onAdd}>+ Log sale</button>
       </div>
 
-      <div className="grid grid-4">
-        <StatCard title="Revenue" value={`GH₵ ${num(totalRevenue, 2)}`} tone="green" foot={`${sales.length} sale(s) all time`} />
-        <StatCard title="Feed Cost" value={`GH₵ ${num(totalFeedCost, 2)}`} tone="rust" foot="from feed records" />
-        <StatCard title="Housing + Setup" value={`GH₵ ${num((litterCost || 0) + setup + (coopCharge || 0), 2)}`} foot={`litter ${num(litterCost || 0, 0)} + coop ${num(coopCharge || 0, 0)} + setup ${num(setup, 0)}`} />
-        <StatCard title="Running Costs" value={`GH₵ ${num((flockRunning || 0) + (flockPettyCost || 0), 2)}`} tone="rust" foot={`expenses GH₵ ${num(flockRunning || 0, 0)} + petty GH₵ ${num(flockPettyCost || 0, 0)}`} />
-        <StatCard title="Margin" value={`GH₵ ${num(flockMargin, 2)}`} tone={flockMargin >= 0 ? 'green' : 'rust'} foot={flockMargin >= 0 ? 'in profit' : 'below break-even'} />
+      {/* ── Period selector at the top so KPIs respond to it ── */}
+      <PeriodFilter
+        period={period} onPeriod={setPeriod}
+        customStart={customStart} customEnd={customEnd}
+        onCustomStart={setCustomStart} onCustomEnd={setCustomEnd}
+      />
+
+      {/* ── Hero P&L row — updates with period ── */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 10, margin: '14px 0 10px' }}>
+        <div style={{ background: 'rgba(122,154,102,0.10)', border: '1px solid rgba(122,154,102,0.25)', borderRadius: 8, padding: '12px 14px' }}>
+          <p style={{ margin: '0 0 4px', fontSize: 10, textTransform: 'uppercase', letterSpacing: '.08em', color: '#7A9A66', fontWeight: 700 }}>Revenue</p>
+          <p style={{ margin: 0, fontSize: 20, fontWeight: 700, fontFamily: 'monospace', color: '#7A9A66' }}>GH₵ {num(periodRevenue, 2)}</p>
+          <p style={{ margin: '3px 0 0', fontSize: 11, color: '#666' }}>{visibleSales.length} sale(s) · {periodLabel}</p>
+        </div>
+        <div style={{ background: 'rgba(192,57,43,0.10)', border: '1px solid rgba(192,57,43,0.22)', borderRadius: 8, padding: '12px 14px' }}>
+          <p style={{ margin: '0 0 4px', fontSize: 10, textTransform: 'uppercase', letterSpacing: '.08em', color: '#e07070', fontWeight: 700 }}>Total Cost</p>
+          <p style={{ margin: 0, fontSize: 20, fontWeight: 700, fontFamily: 'monospace', color: '#e07070' }}>GH₵ {num(periodTotalCost, 2)}</p>
+          <p style={{ margin: '3px 0 0', fontSize: 11, color: '#666' }}>feed + litter + running{period === 'all' ? ' + setup' : ''}</p>
+        </div>
+        <div style={{ background: periodProfit >= 0 ? 'rgba(122,154,102,0.08)' : 'rgba(192,57,43,0.08)', border: `1px solid ${periodProfit >= 0 ? 'rgba(122,154,102,0.3)' : 'rgba(192,57,43,0.3)'}`, borderRadius: 8, padding: '12px 14px' }}>
+          <p style={{ margin: '0 0 4px', fontSize: 10, textTransform: 'uppercase', letterSpacing: '.08em', color: periodProfit >= 0 ? '#7A9A66' : '#e07070', fontWeight: 700 }}>Net Profit</p>
+          <p style={{ margin: 0, fontSize: 20, fontWeight: 700, fontFamily: 'monospace', color: periodProfit >= 0 ? '#7A9A66' : '#e07070' }}>{periodProfit >= 0 ? '+' : ''}GH₵ {num(periodProfit, 2)}</p>
+          <p style={{ margin: '3px 0 0', fontSize: 11, color: '#666' }}>{periodRevenue > 0 ? `${num((periodProfit / periodRevenue) * 100, 1)}% margin` : 'no sales yet'}</p>
+        </div>
+      </div>
+
+      {/* ── Cost breakdown row ── */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(130px,1fr))', gap: 8, marginBottom: 14 }}>
+        <StatCard title="Feed Cost" value={`GH₵ ${num(periodFeedCost, 2)}`} tone="rust" foot={isFiltered ? periodLabel : 'from feed records'} />
+        <StatCard title="Litter" value={`GH₵ ${num(periodLitterCost, 2)}`} foot={isFiltered ? periodLabel : 'litter purchases'} />
+        <StatCard title="Running / Petty" value={`GH₵ ${num(periodPettyCost + periodRunning, 2)}`} tone="rust" foot="meds, labour, sundries" />
+        {period === 'all' && <StatCard title="Setup + Coop" value={`GH₵ ${num(periodSetup + periodCoop, 2)}`} foot="one-off charges" />}
       </div>
 
       {/* Payment mode breakdown */}
-      {(() => { const pm = calcPayModeTotals(sales, (r) => r.amount); return <PayModeBreakdown cash={pm.cash} momo={pm.momo} credit={pm.credit} />; })()}
+      {(() => { const pm = calcPayModeTotals(visibleSales, (r) => r.amount); return <PayModeBreakdown cash={pm.cash} momo={pm.momo} credit={pm.credit} />; })()}
 
       {totalOwed > 0 && (
         <div className="alert-banner" style={{ background: 'rgba(192,57,43,0.12)', border: '1px solid rgba(192,57,43,0.3)', borderRadius: 7, padding: '9px 14px', marginBottom: 14, fontSize: 13, color: '#e07070' }}>
@@ -7180,27 +7232,11 @@ function SalesTab({ sales, flock, totalRevenue, flockMargin, totalFeedCost, litt
         </div>
       )}
 
-      <p className="stat-foot" style={{ margin: '12px 0 18px' }}>
-        Profit = revenue − (feed GH₵ {num(totalFeedCost, 2)} + litter GH₵ {num(litterCost || 0, 2)}
-        + coop share GH₵ {num(coopCharge || 0, 2)} + expenses GH₵ {num(flockRunning || 0, 2)}
-        + feed/meds petty costs GH₵ {num(flockPettyCost || 0, 2)} + setup GH₵ {num(setup, 2)}).
-        {' '}<button className="link-btn" onClick={onEditFlock}>Edit setup cost</button> for chicks and brooding.
-        {coopInvested > 0 && (
-          <> Coops and housing: GH₵ {num(coopInvested, 2)} invested, charged over their working life
-          so one build doesn&apos;t swallow a single batch.</>
-        )}
+      <p className="stat-foot" style={{ margin: '4px 0 14px' }}>
+        <button className="link-btn" onClick={onEditFlock}>Edit setup cost</button> to update chick &amp; brooding cost.
+        {coopInvested > 0 && <> Coop investment GH₵ {num(coopInvested, 2)} is spread over its working life.</>}
+        {!isFiltered && <> Setup &amp; coop charges are included in all-time cost but excluded from period views.</>}
       </p>
-
-      <PeriodFilter
-        period={period} onPeriod={setPeriod}
-        customStart={customStart} customEnd={customEnd}
-        onCustomStart={setCustomStart} onCustomEnd={setCustomEnd}
-      />
-      {period !== 'all' && (
-        <p style={{ fontSize: 12, color: '#aaa', marginBottom: 10 }}>
-          Showing {visibleSales.length} sale(s) · Revenue: <strong style={{ color: 'var(--gold)' }}>GH₵ {num(periodRevenue, 2)}</strong>
-        </p>
-      )}
 
       <div className="table-wrap">
         <table className="data">
