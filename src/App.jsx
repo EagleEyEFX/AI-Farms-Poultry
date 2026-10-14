@@ -1664,7 +1664,9 @@ function AppInner({ profileId, profileName, farmName, onSwitchProfile }) {
   const coopCharge = flockExpenses.filter((e) => e.capital).reduce((s, e) => s + chargedToDate(e), 0);
   const coopInvested = flockExpenses.filter((e) => e.capital).reduce((s, e) => s + (Number(e.amount) || 0), 0);
   const flockRunning = flockExpenses.filter((e) => !e.capital).reduce((s, e) => s + (Number(e.amount) || 0), 0);
-  const flockCost = totalFeedCost + litterCost + coopCharge + flockRunning + (Number(activeFlock.setupCost) || 0);
+  // Petty / running costs logged in the Petty Costs panel for 'poultry'
+  const flockPettyCost = (data.pettyCosts || []).filter((c) => c.farm === 'poultry').reduce((s, c) => s + (Number(c.amount) || 0), 0);
+  const flockCost = totalFeedCost + litterCost + coopCharge + flockRunning + flockPettyCost + (Number(activeFlock.setupCost) || 0);
   const flockMargin = totalRevenue - flockCost;
 
   // Feed run-out projection: average daily use over the last 7 logged days.
@@ -3169,6 +3171,7 @@ function AppInner({ profileId, profileName, farmName, onSwitchProfile }) {
           coopCharge={coopCharge}
           coopInvested={coopInvested}
           flockRunning={flockRunning}
+          flockPettyCost={flockPettyCost}
           onAdd={() => setModal('sale')}
           onEditFlock={() => setModal(`flock:${activeFlock.id}`)}
           onInvoice={openInvoiceFromSale}
@@ -7138,7 +7141,7 @@ function LogPaymentModal({ sale, saleAmount, buyerName, onClose, onLogPayment, o
 
 /* ---------------- Sales & profit ---------------- */
 
-function SalesTab({ sales, flock, totalRevenue, flockMargin, totalFeedCost, litterCost, coopCharge, coopInvested, flockRunning, onAdd, onEditFlock, onInvoice, onUpdateSale, onLogPayment }) {
+function SalesTab({ sales, flock, totalRevenue, flockMargin, totalFeedCost, litterCost, coopCharge, coopInvested, flockRunning, flockPettyCost, onAdd, onEditFlock, onInvoice, onUpdateSale, onLogPayment }) {
   const setup = Number(flock.setupCost) || 0;
   const [payModal, setPayModal] = useState(null); // sale record being paid
   const [period, setPeriod] = useState('all');
@@ -7164,6 +7167,7 @@ function SalesTab({ sales, flock, totalRevenue, flockMargin, totalFeedCost, litt
         <StatCard title="Revenue" value={`GH₵ ${num(totalRevenue, 2)}`} tone="green" foot={`${sales.length} sale(s) all time`} />
         <StatCard title="Feed Cost" value={`GH₵ ${num(totalFeedCost, 2)}`} tone="rust" foot="from feed records" />
         <StatCard title="Housing + Setup" value={`GH₵ ${num((litterCost || 0) + setup + (coopCharge || 0), 2)}`} foot={`litter ${num(litterCost || 0, 0)} + coop ${num(coopCharge || 0, 0)} + setup ${num(setup, 0)}`} />
+        <StatCard title="Running Costs" value={`GH₵ ${num((flockRunning || 0) + (flockPettyCost || 0), 2)}`} tone="rust" foot={`expenses GH₵ ${num(flockRunning || 0, 0)} + petty GH₵ ${num(flockPettyCost || 0, 0)}`} />
         <StatCard title="Margin" value={`GH₵ ${num(flockMargin, 2)}`} tone={flockMargin >= 0 ? 'green' : 'rust'} foot={flockMargin >= 0 ? 'in profit' : 'below break-even'} />
       </div>
 
@@ -7178,7 +7182,8 @@ function SalesTab({ sales, flock, totalRevenue, flockMargin, totalFeedCost, litt
 
       <p className="stat-foot" style={{ margin: '12px 0 18px' }}>
         Profit = revenue − (feed GH₵ {num(totalFeedCost, 2)} + litter GH₵ {num(litterCost || 0, 2)}
-        + coop share GH₵ {num(coopCharge || 0, 2)} + other GH₵ {num(flockRunning || 0, 2)} + setup GH₵ {num(setup, 2)}).
+        + coop share GH₵ {num(coopCharge || 0, 2)} + expenses GH₵ {num(flockRunning || 0, 2)}
+        + feed/meds petty costs GH₵ {num(flockPettyCost || 0, 2)} + setup GH₵ {num(setup, 2)}).
         {' '}<button className="link-btn" onClick={onEditFlock}>Edit setup cost</button> for chicks and brooding.
         {coopInvested > 0 && (
           <> Coops and housing: GH₵ {num(coopInvested, 2)} invested, charged over their working life
