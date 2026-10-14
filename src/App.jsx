@@ -160,6 +160,7 @@ function defaultPepper() {
     soilReadings: [],    // per-field soil tests after manure mix, over time
     batches: [],         // closed planting cycles per field (history)
     nurseryBatches: [],  // seed-sowing through germination, before transplant
+    cropExpenses: [],    // per-field cash expense log (labour, irrigation, misc)
   };
 }
 
@@ -393,6 +394,7 @@ function migrate(saved) {
       soilReadings: pepper.soilReadings || [],
       batches: pepper.batches || [],
       nurseryBatches: pepper.nurseryBatches || [],
+      cropExpenses: pepper.cropExpenses || [],
     },
     goats: { ...defaultGoats(), ...(saved.goats || {}) },
     updatedAt: saved.updatedAt || new Date().toISOString(),
@@ -2046,6 +2048,17 @@ function AppInner({ profileId, profileName, farmName, onSwitchProfile }) {
     setData((d) => touch({ ...d, pepper: { ...d.pepper, inputs: (d.pepper.inputs || []).filter((i) => i.id !== id) } }));
   }
 
+  // ── Crop expenses (per-field cash expense log) ───────────────────────────
+  function addCropExpense(entry) {
+    setData((d) => touch({ ...d, pepper: { ...d.pepper, cropExpenses: [...(d.pepper.cropExpenses || []), entry] } }));
+  }
+  function updateCropExpense(id, patch) {
+    setData((d) => touch({ ...d, pepper: { ...d.pepper, cropExpenses: (d.pepper.cropExpenses || []).map((e) => (e.id === id ? { ...e, ...patch } : e)) } }));
+  }
+  function deleteCropExpense(id) {
+    setData((d) => touch({ ...d, pepper: { ...d.pepper, cropExpenses: (d.pepper.cropExpenses || []).filter((e) => e.id !== id) } }));
+  }
+
   /** Load a breed vaccination programme, skipping any shot already recorded. */
   function applyVaxTemplate() {
     const tpl = VAX_TEMPLATES[activeFlock.standardKey] || [];
@@ -3358,6 +3371,9 @@ function AppInner({ profileId, profileName, farmName, onSwitchProfile }) {
           onUpdateHarvest={updateHarvest}
           onHarvestPayment={addHarvestPayment}
           onSendEventToTask={sendSprayEventToTask}
+          onAddCropExpense={addCropExpense}
+          onUpdateCropExpense={updateCropExpense}
+          onDeleteCropExpense={deleteCropExpense}
         />
       )}
 
@@ -5001,6 +5017,7 @@ function PepperWorkspace({
   onAddNurseryBatch, onUpdateNurseryBatch, onDeleteNurseryBatch, onTransplantNurseryBatch,
   onInvoiceHarvest, onUpdateHarvest, onHarvestPayment,
   onSendEventToTask,
+  onAddCropExpense, onUpdateCropExpense, onDeleteCropExpense,
 }) {
   const [ptab, setPtab] = useState('dashboard');
   const [soilView, setSoilView] = useState('soil'); // 'soil' | 'batches'
@@ -5254,6 +5271,7 @@ function PepperWorkspace({
           ['spray', 'Spray & Fertigation'],
           ['inputs', 'Input Stock'],
           ['harvest', 'Harvest & Sales'],
+          ['financials', '💰 Financials'],
           ['reminders', 'Reminders'],
         ].map(([id, label]) => (
           <button key={id} className={`tab${ptab === id ? ' active' : ''}`} onClick={() => setPtab(id)}>{label}</button>
@@ -5389,6 +5407,17 @@ function PepperWorkspace({
         />
       )}
 
+      {ptab === 'financials' && (
+        <CropsFinancialsTab
+          fields={fields}
+          harvests={pepper.harvests || []}
+          sprays={pepper.sprays || []}
+          cropExpenses={pepper.cropExpenses || []}
+          onAddExpense={() => setModal('crop-expense')}
+          onDeleteExpense={onDeleteCropExpense}
+        />
+      )}
+
       {modal === 'add-field' && (
         <AddFieldForm
           defaultName={`Field ${fields.length + 1}`}
@@ -5430,6 +5459,14 @@ function PepperWorkspace({
       )}
       {modal === 'input' && (
         <InputForm onClose={() => setModal(null)} onSave={(e) => { onAddInput(e); setModal(null); }} />
+      )}
+      {modal === 'crop-expense' && (
+        <AddCropExpenseForm
+          fields={fields}
+          defaultField={scope === 'all' ? fields[0].id : scope}
+          onClose={() => setModal(null)}
+          onSave={(e) => { onAddCropExpense(e); setModal(null); }}
+        />
       )}
       {modal === 'manure' && (
         <ManureReadingForm onClose={() => setModal(null)} onSave={(e) => { onAddManureReading(e); setModal(null); }} />
@@ -12708,6 +12745,314 @@ function TransplantNurseryForm({ batch, fields, onClose, onSave }) {
 /* ============================================================= */
 /* ============= AGROCHEMICAL / INPUT STOCK (PEPPER) =========== */
 /* ============================================================= */
+
+// ── Crops Financials ──────────────────────────────────────────────────────────
+
+const CROP_EXP_CATS = ['Labour', 'Irrigation', 'Fertiliser', 'Fungicide', 'Insecticide', 'Seeds / Seedlings', 'Transport', 'Other'];
+const PERIOD_OPTS_CROP = [
+  { value: 'all',   label: 'All time' },
+  { value: 'today', label: 'Today' },
+  { value: 'week',  label: 'This week' },
+  { value: 'month', label: 'This month' },
+  { value: 'year',  label: 'This year' },
+  { value: 'custom',label: 'Custom' },
+];
+
+function CropsFinancialsTab({ fields, harvests, sprays, cropExpenses, onAddExpense, onDeleteExpense }) {
+  const [fieldTab, setFieldTab] = useState('all');   // 'all' | field.id
+  const [period, setPeriod]     = useState('all');
+  const [customStart, setCS]    = useState('');
+  const [customEnd,   setCE]    = useState('');
+  const [subTab, setSubTab]     = useState('summary'); // 'summary' | 'income' | 'expenses'
+
+  // ── period filter (delegates to the shared filterByPeriod utility) ──
+  function filterByP(arr, dateField = 'date') {
+    return filterByPeriod(arr, period, customStart, customEnd, dateField);
+  }
+
+  // ── field filter ──
+  const inField = (r) => fieldTab === 'all' || r.fieldId === fieldTab;
+  const fieldName = (id) => (fields.find((f) => f.id === id) || {}).name || id;
+  const activeFields = fieldTab === 'all' ? fields : fields.filter((f) => f.id === fieldTab);
+
+  // ── per-field summary for "all" view ──
+  function fieldSummary(fid) {
+    const fHarvests = filterByP(harvests.filter((h) => h.fieldId === fid));
+    const fSprays   = filterByP(sprays.filter((s) => s.fieldId === fid));
+    const fExp      = filterByP(cropExpenses.filter((e) => e.fieldId === fid));
+    const setupCost = (fields.find((f) => f.id === fid) || {}).setupCost || 0;
+    const rev  = fHarvests.reduce((s, h) => s + (Number(h.weightKg) || 0) * (Number(h.pricePerKg) || 0), 0);
+    const cost = fSprays.reduce((s, r) => s + (Number(r.cost) || 0), 0)
+               + fExp.reduce((s, e) => s + (Number(e.amount) || 0), 0)
+               + (period === 'all' ? Number(setupCost) : 0);
+    return { rev, cost, profit: rev - cost, harvests: fHarvests, sprays: fSprays, expenses: fExp };
+  }
+
+  // ── combined totals for currently selected field/period ──
+  const visHarvests = filterByP(harvests.filter(inField));
+  const visSprays   = filterByP(sprays.filter(inField));
+  const visExp      = filterByP(cropExpenses.filter(inField));
+  const visSetup    = period === 'all'
+    ? activeFields.reduce((s, f) => s + (Number(f.setupCost) || 0), 0)
+    : 0;
+
+  const totalRev    = visHarvests.reduce((s, h) => s + (Number(h.weightKg) || 0) * (Number(h.pricePerKg) || 0), 0);
+  const sprayCost   = visSprays.reduce((s, r) => s + (Number(r.cost) || 0), 0);
+  const expCost     = visExp.reduce((s, e) => s + (Number(e.amount) || 0), 0);
+  const totalCost   = sprayCost + expCost + visSetup;
+  const profit      = totalRev - totalCost;
+
+  const periodLabel = period === 'custom'
+    ? (customStart && customEnd ? `${customStart} → ${customEnd}` : 'Custom')
+    : (PERIOD_OPTS_CROP.find((o) => o.value === period)?.label || 'All time');
+
+  return (
+    <div>
+      {/* Period filter */}
+      <div className="panel-head" style={{ marginBottom: 12 }}>
+        <h3 style={{ fontSize: 18 }}>💰 Crops Financials</h3>
+        <button className="btn btn-green" onClick={onAddExpense}>+ Log Expense</button>
+      </div>
+
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 14, alignItems: 'center' }}>
+        <span style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.08em', color: 'var(--text3)', marginRight: 4 }}>Period:</span>
+        {PERIOD_OPTS_CROP.map((o) => (
+          <button
+            key={o.value}
+            className={`tag${period === o.value ? ' green' : ''}`}
+            style={{ cursor: 'pointer', border: '1px solid var(--border)', background: period === o.value ? undefined : 'transparent' }}
+            onClick={() => setPeriod(o.value)}
+          >{o.label}</button>
+        ))}
+      </div>
+      {period === 'custom' && (
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12, flexWrap: 'wrap' }}>
+          <input type="date" value={customStart} onChange={(e) => setCS(e.target.value)}
+            style={{ background: 'var(--input-bg)', border: '1px solid var(--border)', color: 'var(--text)', borderRadius: 6, padding: '4px 8px', fontSize: 13 }} />
+          <span style={{ color: 'var(--text3)' }}>→</span>
+          <input type="date" value={customEnd} onChange={(e) => setCE(e.target.value)}
+            style={{ background: 'var(--input-bg)', border: '1px solid var(--border)', color: 'var(--text)', borderRadius: 6, padding: '4px 8px', fontSize: 13 }} />
+        </div>
+      )}
+
+      {/* Field sub-tabs */}
+      <nav className="tab-row" style={{ marginBottom: 14 }}>
+        <button className={`tab${fieldTab === 'all' ? ' active' : ''}`} onClick={() => setFieldTab('all')}>🌾 All Fields</button>
+        {fields.map((f) => (
+          <button key={f.id} className={`tab${fieldTab === f.id ? ' active' : ''}`} onClick={() => setFieldTab(f.id)}>
+            🌶 {f.name}
+          </button>
+        ))}
+      </nav>
+
+      {/* Hero KPI tiles */}
+      <div className="stat-grid" style={{ marginBottom: 14 }}>
+        <div className="stat-card">
+          <span className="stat-label">Revenue</span>
+          <span className="stat-value gold">{ghc(totalRev)}</span>
+          <span className="stat-foot">{periodLabel} · {fieldTab === 'all' ? 'all fields' : fieldName(fieldTab)}</span>
+        </div>
+        <div className="stat-card">
+          <span className="stat-label">Total Cost</span>
+          <span className="stat-value rust">{ghc(totalCost)}</span>
+          <span className="stat-foot">sprays + expenses{period === 'all' ? ' + setup' : ''}</span>
+        </div>
+        <div className="stat-card">
+          <span className="stat-label">Net Profit</span>
+          <span className={`stat-value ${profit >= 0 ? 'green' : 'rust'}`}>{profit >= 0 ? '+' : ''}{ghc(profit)}</span>
+          <span className="stat-foot">{totalRev > 0 ? `${num((profit / totalRev) * 100, 1)}% margin` : 'no sales yet'}</span>
+        </div>
+      </div>
+
+      {/* Cost breakdown row */}
+      <div className="stat-grid" style={{ marginBottom: 16 }}>
+        <div className="stat-card">
+          <span className="stat-label">Spray / Input Costs</span>
+          <span className="stat-value rust">{ghc(sprayCost)}</span>
+          <span className="stat-foot">from spray log</span>
+        </div>
+        <div className="stat-card">
+          <span className="stat-label">Labour &amp; Other</span>
+          <span className="stat-value rust">{ghc(expCost)}</span>
+          <span className="stat-foot">from expense log</span>
+        </div>
+        {period === 'all' && visSetup > 0 && (
+          <div className="stat-card">
+            <span className="stat-label">Setup Cost</span>
+            <span className="stat-value rust">{ghc(visSetup)}</span>
+            <span className="stat-foot">field preparation</span>
+          </div>
+        )}
+      </div>
+
+      {/* Per-field breakdown only when viewing all fields */}
+      {fieldTab === 'all' && fields.length > 1 && (
+        <div style={{ marginBottom: 18 }}>
+          <p style={{ fontSize: 12, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.08em', color: 'var(--text3)', margin: '0 0 8px' }}>Field-by-Field</p>
+          <div className="table-wrap">
+            <table className="data">
+              <thead><tr><th>Field</th><th>Revenue</th><th>Total Cost</th><th>Net Profit</th><th>Margin</th></tr></thead>
+              <tbody>
+                {fields.map((f) => {
+                  const s = fieldSummary(f.id);
+                  return (
+                    <tr key={f.id} style={{ cursor: 'pointer' }} onClick={() => setFieldTab(f.id)}>
+                      <td><strong>{f.name}</strong>{f.variety ? <span style={{ color: 'var(--text3)', fontSize: 11, marginLeft: 6 }}>{f.variety}</span> : null}</td>
+                      <td className="mono" style={{ color: 'var(--gold)' }}>{ghc(s.rev)}</td>
+                      <td className="mono rust">{ghc(s.cost)}</td>
+                      <td className={`mono ${s.profit >= 0 ? 'green' : 'rust'}`}>{s.profit >= 0 ? '+' : ''}{ghc(s.profit)}</td>
+                      <td className="mono">{s.rev > 0 ? `${num((s.profit / s.rev) * 100, 1)}%` : '—'}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <p style={{ fontSize: 11, color: 'var(--text3)', margin: '6px 0 0' }}>Click a row to drill into that field's detail.</p>
+        </div>
+      )}
+
+      {/* Sub-tabs: Summary / Harvests / Expenses */}
+      <nav className="tab-row" style={{ marginBottom: 12 }}>
+        <button className={`tab${subTab === 'summary' ? ' active' : ''}`}  onClick={() => setSubTab('summary')}>📊 Summary</button>
+        <button className={`tab${subTab === 'income' ? ' active' : ''}`}   onClick={() => setSubTab('income')}>📥 Harvests</button>
+        <button className={`tab${subTab === 'expenses' ? ' active' : ''}`} onClick={() => setSubTab('expenses')}>📤 Expenses</button>
+      </nav>
+
+      {subTab === 'summary' && (
+        <div>
+          {visHarvests.length === 0 && visExp.length === 0 ? (
+            <p className="empty">No records for this period{fieldTab !== 'all' ? ` on ${fieldName(fieldTab)}` : ''}. Log a harvest or an expense to start tracking.</p>
+          ) : (
+            <>
+              <p style={{ fontSize: 13, color: 'var(--text2)', marginBottom: 10 }}>
+                <strong style={{ color: 'var(--text)' }}>{visHarvests.length}</strong> harvest(s) ·{' '}
+                <strong style={{ color: 'var(--text)' }}>{visSprays.length + visExp.length}</strong> expense record(s) ·{' '}
+                period: <strong style={{ color: 'var(--gold)' }}>{periodLabel}</strong>
+              </p>
+            </>
+          )}
+        </div>
+      )}
+
+      {subTab === 'income' && (
+        <div className="table-wrap">
+          <table className="data">
+            <thead><tr><th>Date</th><th>Field</th><th>Buyer</th><th>Grade</th><th>Kg</th><th>Price/kg</th><th>Amount</th></tr></thead>
+            <tbody>
+              {[...visHarvests].sort((a, b) => b.date.localeCompare(a.date)).map((h) => {
+                const amt = (Number(h.weightKg) || 0) * (Number(h.pricePerKg) || 0);
+                return (
+                  <tr key={h.id}>
+                    <td className="mono" style={{ fontSize: 12, color: 'var(--text3)' }}>{fmtDate(h.date)}</td>
+                    <td>{fieldName(h.fieldId)}</td>
+                    <td>{h.buyer || '—'}</td>
+                    <td>{h.grade ? <span className="tag green">{h.grade}</span> : '—'}</td>
+                    <td className="mono">{num(h.weightKg, 1)} kg</td>
+                    <td className="mono">{h.pricePerKg ? ghc(h.pricePerKg) : '—'}</td>
+                    <td className="mono gold">{ghc(amt)}</td>
+                  </tr>
+                );
+              })}
+              {visHarvests.length === 0 && <tr><td colSpan={7} className="empty">No harvests in this period.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {subTab === 'expenses' && (
+        <>
+          <div style={{ marginBottom: 12 }}>
+            <button className="btn btn-green" onClick={onAddExpense}>+ Log Expense</button>
+          </div>
+          <div className="table-wrap">
+            <table className="data">
+              <thead><tr><th>Date</th><th>Field</th><th>Description</th><th>Category</th><th>Amount</th><th></th></tr></thead>
+              <tbody>
+                {/* Spray records (from spray log) */}
+                {[...visSprays].sort((a, b) => b.date.localeCompare(a.date)).map((r) => (
+                  <tr key={`spray-${r.id}`}>
+                    <td className="mono" style={{ fontSize: 12, color: 'var(--text3)' }}>{fmtDate(r.date)}</td>
+                    <td>{fieldName(r.fieldId)}</td>
+                    <td>{r.product || r.type || 'Spray'}</td>
+                    <td><span className="tag gold">Spray</span></td>
+                    <td className="mono rust">{r.cost ? ghc(r.cost) : '—'}</td>
+                    <td style={{ color: 'var(--text3)', fontSize: 11 }}>spray log</td>
+                  </tr>
+                ))}
+                {/* Manual crop expenses */}
+                {[...visExp].sort((a, b) => b.date.localeCompare(a.date)).map((e) => (
+                  <tr key={e.id}>
+                    <td className="mono" style={{ fontSize: 12, color: 'var(--text3)' }}>{fmtDate(e.date)}</td>
+                    <td>{fieldName(e.fieldId)}</td>
+                    <td>{e.description}</td>
+                    <td><span className="tag">{e.category}</span></td>
+                    <td className="mono rust">{ghc(e.amount)}</td>
+                    <td><button className="link-btn rust" onClick={() => onDeleteExpense(e.id)}>Delete</button></td>
+                  </tr>
+                ))}
+                {visSprays.length === 0 && visExp.length === 0 && (
+                  <tr><td colSpan={6} className="empty">No expenses in this period.</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function AddCropExpenseForm({ fields, defaultField, onClose, onSave }) {
+  const [f, setF] = useState({
+    date: todayISO(),
+    fieldId: defaultField || (fields[0] && fields[0].id) || '',
+    description: '',
+    category: 'Labour',
+    amount: '',
+    notes: '',
+  });
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  function submit(ev) {
+    ev.preventDefault();
+    if (!f.description || !f.amount || !f.fieldId) return;
+    onSave({ id: newId(), ...f, amount: Number(f.amount) });
+  }
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <h2>Log Crop Expense</h2>
+          <button className="close-btn" onClick={onClose}>✕</button>
+        </div>
+        <form onSubmit={submit}>
+          <div className="form-grid">
+            <Field label="Date"><input type="date" required value={f.date} onChange={set('date')} /></Field>
+            <Field label="Field">
+              <select value={f.fieldId} onChange={set('fieldId')}>
+                {fields.map((fi) => <option key={fi.id} value={fi.id}>{fi.name}</option>)}
+              </select>
+            </Field>
+            <Field label="Description"><input required value={f.description} onChange={set('description')} placeholder="e.g. Casual labour — weeding" /></Field>
+            <Field label="Category">
+              <select value={f.category} onChange={set('category')}>
+                {CROP_EXP_CATS.map((c) => <option key={c}>{c}</option>)}
+              </select>
+            </Field>
+            <Field label="Amount (GH₵)"><input required type="number" step="0.01" min="0" value={f.amount} onChange={set('amount')} placeholder="0.00" /></Field>
+            <Field label="Notes (optional)"><input value={f.notes} onChange={set('notes')} placeholder="optional" /></Field>
+          </div>
+          <div className="modal-foot">
+            <button type="button" className="btn btn-ghost" onClick={onClose}>Cancel</button>
+            <button type="submit" className="btn btn-green">Save Expense</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// ── Input stock ───────────────────────────────────────────────────────────────
 
 const INPUT_UNITS = ['ml', 'L', 'g', 'kg', 'sachets', 'bags'];
 const INPUT_TYPES = ['Insecticide', 'Fungicide', 'Fertiliser', 'Foliar feed', 'Herbicide', 'Other'];
