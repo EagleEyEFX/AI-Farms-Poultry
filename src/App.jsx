@@ -12765,6 +12765,11 @@ function CropsFinancialsTab({ fields, harvests, sprays, cropExpenses, onAddExpen
   const [customEnd,   setCE]    = useState('');
   const [subTab, setSubTab]     = useState('summary'); // 'summary' | 'income' | 'expenses'
 
+  // ── defensive: guard against missing dates or fieldIds in old records ──
+  const safeHarvests     = (harvests     || []).filter((h) => h && h.date);
+  const safeSprays       = (sprays       || []).filter((s) => s && s.date);
+  const safeCropExpenses = (cropExpenses || []).filter((e) => e && e.date);
+
   // ── period filter (delegates to the shared filterByPeriod utility) ──
   function filterByP(arr, dateField = 'date') {
     return filterByPeriod(arr, period, customStart, customEnd, dateField);
@@ -12777,9 +12782,9 @@ function CropsFinancialsTab({ fields, harvests, sprays, cropExpenses, onAddExpen
 
   // ── per-field summary for "all" view ──
   function fieldSummary(fid) {
-    const fHarvests = filterByP(harvests.filter((h) => h.fieldId === fid));
-    const fSprays   = filterByP(sprays.filter((s) => s.fieldId === fid));
-    const fExp      = filterByP(cropExpenses.filter((e) => e.fieldId === fid));
+    const fHarvests = filterByP(safeHarvests.filter((h) => h.fieldId === fid));
+    const fSprays   = filterByP(safeSprays.filter((s) => s.fieldId === fid));
+    const fExp      = filterByP(safeCropExpenses.filter((e) => e.fieldId === fid));
     const setupCost = (fields.find((f) => f.id === fid) || {}).setupCost || 0;
     const rev  = fHarvests.reduce((s, h) => s + (Number(h.weightKg) || 0) * (Number(h.pricePerKg) || 0), 0);
     const cost = fSprays.reduce((s, r) => s + (Number(r.cost) || 0), 0)
@@ -12789,9 +12794,9 @@ function CropsFinancialsTab({ fields, harvests, sprays, cropExpenses, onAddExpen
   }
 
   // ── combined totals for currently selected field/period ──
-  const visHarvests = filterByP(harvests.filter(inField));
-  const visSprays   = filterByP(sprays.filter(inField));
-  const visExp      = filterByP(cropExpenses.filter(inField));
+  const visHarvests = filterByP(safeHarvests.filter(inField));
+  const visSprays   = filterByP(safeSprays.filter(inField));
+  const visExp      = filterByP(safeCropExpenses.filter(inField));
   const visSetup    = period === 'all'
     ? activeFields.reduce((s, f) => s + (Number(f.setupCost) || 0), 0)
     : 0;
@@ -12805,6 +12810,10 @@ function CropsFinancialsTab({ fields, harvests, sprays, cropExpenses, onAddExpen
   const periodLabel = period === 'custom'
     ? (customStart && customEnd ? `${customStart} → ${customEnd}` : 'Custom')
     : (PERIOD_OPTS_CROP.find((o) => o.value === period)?.label || 'All time');
+
+  if (!fields || fields.length === 0) {
+    return <p className="empty" style={{ padding: 24 }}>No fields found. Add a field under the Dashboard tab first.</p>;
+  }
 
   return (
     <div>
@@ -12940,7 +12949,7 @@ function CropsFinancialsTab({ fields, harvests, sprays, cropExpenses, onAddExpen
           <table className="data">
             <thead><tr><th>Date</th><th>Field</th><th>Buyer</th><th>Grade</th><th>Kg</th><th>Price/kg</th><th>Amount</th></tr></thead>
             <tbody>
-              {[...visHarvests].sort((a, b) => b.date.localeCompare(a.date)).map((h) => {
+              {[...visHarvests].sort((a, b) => (b.date || '').localeCompare(a.date || '')).map((h) => {
                 const amt = (Number(h.weightKg) || 0) * (Number(h.pricePerKg) || 0);
                 return (
                   <tr key={h.id}>
@@ -12970,7 +12979,7 @@ function CropsFinancialsTab({ fields, harvests, sprays, cropExpenses, onAddExpen
               <thead><tr><th>Date</th><th>Field</th><th>Description</th><th>Category</th><th>Amount</th><th></th></tr></thead>
               <tbody>
                 {/* Spray records (from spray log) */}
-                {[...visSprays].sort((a, b) => b.date.localeCompare(a.date)).map((r) => (
+                {[...visSprays].sort((a, b) => (b.date || '').localeCompare(a.date || '')).map((r) => (
                   <tr key={`spray-${r.id}`}>
                     <td className="mono" style={{ fontSize: 12, color: 'var(--text3)' }}>{fmtDate(r.date)}</td>
                     <td>{fieldName(r.fieldId)}</td>
@@ -12981,7 +12990,7 @@ function CropsFinancialsTab({ fields, harvests, sprays, cropExpenses, onAddExpen
                   </tr>
                 ))}
                 {/* Manual crop expenses */}
-                {[...visExp].sort((a, b) => b.date.localeCompare(a.date)).map((e) => (
+                {[...visExp].sort((a, b) => (b.date || '').localeCompare(a.date || '')).map((e) => (
                   <tr key={e.id}>
                     <td className="mono" style={{ fontSize: 12, color: 'var(--text3)' }}>{fmtDate(e.date)}</td>
                     <td>{fieldName(e.fieldId)}</td>
