@@ -5408,14 +5408,16 @@ function PepperWorkspace({
       )}
 
       {ptab === 'financials' && (
-        <CropsFinancialsTab
-          fields={fields}
-          harvests={pepper.harvests || []}
-          sprays={pepper.sprays || []}
-          cropExpenses={pepper.cropExpenses || []}
-          onAddExpense={() => setModal('crop-expense')}
-          onDeleteExpense={onDeleteCropExpense}
-        />
+        <CropsFinancialsErrorBoundary>
+          <CropsFinancialsTab
+            fields={fields}
+            harvests={pepper.harvests || []}
+            sprays={pepper.sprays || []}
+            cropExpenses={pepper.cropExpenses || []}
+            onAddExpense={() => setModal('crop-expense')}
+            onDeleteExpense={onDeleteCropExpense}
+          />
+        </CropsFinancialsErrorBoundary>
       )}
 
       {modal === 'add-field' && (
@@ -12747,6 +12749,23 @@ function TransplantNurseryForm({ batch, fields, onClose, onSave }) {
 /* ============================================================= */
 
 // ── Crops Financials ──────────────────────────────────────────────────────────
+
+class CropsFinancialsErrorBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { error: null }; }
+  static getDerivedStateFromError(e) { return { error: e }; }
+  render() {
+    if (this.state.error) {
+      return (
+        <div style={{ padding: 24, background: 'var(--card-bg)', borderRadius: 10, border: '1px solid var(--border)' }}>
+          <p style={{ color: 'var(--rust, #c0392b)', fontWeight: 700, marginBottom: 8 }}>⚠️ Financials failed to load</p>
+          <p style={{ fontSize: 13, color: 'var(--text2)', marginBottom: 12 }}>Error: {this.state.error.message}</p>
+          <button className="btn btn-ghost" onClick={() => this.setState({ error: null })}>Retry</button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 const CROP_EXP_CATS = ['Labour', 'Irrigation', 'Fertiliser', 'Fungicide', 'Insecticide', 'Seeds / Seedlings', 'Transport', 'Other'];
 const PERIOD_OPTS_CROP = [
