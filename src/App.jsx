@@ -12778,6 +12778,7 @@ const PERIOD_OPTS_CROP = [
 ];
 
 function CropsFinancialsTab({ fields, harvests, sprays, cropExpenses, onAddExpense, onDeleteExpense }) {
+  const ghc = (v) => `GH₵ ${num(v, 2)}`;
   const [fieldTab, setFieldTab] = useState('all');   // 'all' | field.id
   const [period, setPeriod]     = useState('all');
   const [customStart, setCS]    = useState('');
