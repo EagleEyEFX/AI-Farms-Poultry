@@ -239,6 +239,7 @@ function freshData() {
     ownerLoans: { loans: [], repayments: [] }, // owner-as-banker: real loans to the business, with interest
     customFarms: [], // user-defined farms beyond poultry/pepper/goats — any crop or livestock type
     buyers: [],           // buyer phonebook — name, phone, what they buy
+    buyerAdvances: [],    // advance payments from egg buyers — name, amount, date, fulfilled status
     drugStock: [],        // medicine / vaccine inventory — doses on hand, expiry
     expenseTemplates: [], // recurring expense templates
     revenueGoals: [],     // profit / revenue targets per section + period
@@ -269,7 +270,7 @@ function dataRichness(d) {
     (d.vax || []).length + (d.weightSamples || []).length + (d.sales || []).length +
     (d.litter || []).length + (d.expenses || []).length + (d.staff || []).length +
     (d.reminders || []).length + (d.recipes || []).length + (d.invoices || []).length +
-    (d.buyers || []).length + (d.drugStock || []).length + (d.dailyTasks || []).length + (d.pettyCosts || []).length +
+    (d.buyers || []).length + (d.buyerAdvances || []).length + (d.drugStock || []).length + (d.dailyTasks || []).length + (d.pettyCosts || []).length +
     (d.bsf?.batches || []).length +
     (d.ownerLoans?.loans || []).length + (d.ownerLoans?.repayments || []).length +
     (d.customFarms || []).reduce((s, f) => s + 1 + (f.fields || []).length + (f.scouting || []).length +
@@ -366,6 +367,7 @@ function migrate(saved) {
     recipes: saved.recipes || [],
     invoices: saved.invoices || [],
     buyers: saved.buyers || [],
+    buyerAdvances: saved.buyerAdvances || [],
     drugStock: saved.drugStock || [],
     expenseTemplates: saved.expenseTemplates || [],
     revenueGoals: saved.revenueGoals || [],
@@ -1884,6 +1886,17 @@ function AppInner({ profileId, profileName, farmName, onSwitchProfile }) {
   function addSalePayment(saleId, payment) {
     setData((d) => touch({ ...d, sales: (d.sales || []).map((r) => r.id === saleId ? { ...r, payments: [...(r.payments || []), payment] } : r) }));
   }
+  /* ── Buyer advances (egg deposits) ── */
+  function addBuyerAdvance(entry) {
+    setData((d) => touch({ ...d, buyerAdvances: [...(d.buyerAdvances || []), entry] }));
+  }
+  function updateBuyerAdvance(id, patch) {
+    setData((d) => touch({ ...d, buyerAdvances: (d.buyerAdvances || []).map((r) => (r.id === id ? { ...r, ...patch } : r)) }));
+  }
+  function deleteBuyerAdvance(id) {
+    setData((d) => touch({ ...d, buyerAdvances: (d.buyerAdvances || []).filter((r) => r.id !== id) }));
+  }
+
   function addLitter(entry) {
     setData((d) => touch({ ...d, litter: [...(d.litter || []), { ...entry, flockId: activeFlock.id }] }));
   }
@@ -3009,6 +3022,7 @@ function AppInner({ profileId, profileName, farmName, onSwitchProfile }) {
           ['growth', 'Growth'],
           ...(activeFlock.type === 'layer' ? [['laying', 'Laying & Eggs']] : []),
           ['sales', 'Sales & Profit'],
+          ['advances', 'Buyer Advances'],
           ['health', 'Health'],
           ['reminders', 'Reminders'],
         ].map(([id, label]) => (
@@ -3194,6 +3208,15 @@ function AppInner({ profileId, profileName, farmName, onSwitchProfile }) {
           onInvoice={openInvoiceFromSale}
           onUpdateSale={updateSale}
           onLogPayment={addSalePayment}
+        />
+      )}
+
+      {tab === 'advances' && (
+        <BuyerAdvancesTab
+          advances={data.buyerAdvances || []}
+          onAdd={addBuyerAdvance}
+          onUpdate={updateBuyerAdvance}
+          onDelete={deleteBuyerAdvance}
         />
       )}
 
@@ -7183,6 +7206,218 @@ function LogPaymentModal({ sale, saleAmount, buyerName, onClose, onLogPayment, o
 }
 
 /* ---------------- Sales & profit ---------------- */
+
+/* ─────────────────────────────────────────────
+   Buyer Advances Tab
+   Track advance payments from egg buyers.
+   Each record: id, date, buyer, amount, notes,
+   status ('pending'|'fulfilled'|'partial'),
+   fulfilledAmount (eggs supplied so far value)
+   ───────────────────────────────────────────── */
+function BuyerAdvancesTab({ advances, onAdd, onUpdate, onDelete }) {
+  const [modal, setModal] = useState(null); // null | 'add' | advance record (for edit)
+  const [period, setPeriod] = useState('all');
+  const [customStart, setCS] = useState('');
+  const [customEnd,   setCE] = useState('');
+  const [fulfillModal, setFulfillModal] = useState(null); // advance record to mark partial/full
+  const { askConfirm } = useToastConfirm();
+
+  const sorted = [...advances].sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+  const visible = filterByPeriod(sorted, period, customStart, customEnd);
+
+  const totalReceived  = advances.reduce((s, r) => s + (Number(r.amount) || 0), 0);
+  const totalFulfilled = advances.reduce((s, r) => s + (Number(r.fulfilledAmount) || 0), 0);
+  const totalOwed      = totalReceived - totalFulfilled; // eggs still owed to buyers
+
+  const pending    = advances.filter((r) => (r.status || 'pending') === 'pending');
+  const partial    = advances.filter((r) => (r.status || 'pending') === 'partial');
+  const fulfilled  = advances.filter((r) => (r.status || 'pending') === 'fulfilled');
+
+  function statusColor(s) {
+    if (s === 'fulfilled') return '#7A9A66';
+    if (s === 'partial')   return '#D4A537';
+    return '#e07070';
+  }
+  function statusLabel(r) {
+    const s = r.status || 'pending';
+    if (s === 'fulfilled') return '✓ Fulfilled';
+    if (s === 'partial') {
+      const left = (Number(r.amount) || 0) - (Number(r.fulfilledAmount) || 0);
+      return `⏳ Partial — GH₵ ${num(left, 2)} left`;
+    }
+    return `⚠️ Pending — GH₵ ${num(r.amount || 0, 2)} owed`;
+  }
+
+  return (
+    <>
+      <div className="panel-head" style={{ marginBottom: 10 }}>
+        <h3 style={{ fontSize: 18 }}>Buyer Advances</h3>
+        <button className="btn btn-gold" onClick={() => setModal('add')}>+ Record advance</button>
+      </div>
+
+      {/* Summary stats */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(130px,1fr))', gap: 10, marginBottom: 14 }}>
+        <StatCard title="Total Received" value={`GH₵ ${num(totalReceived, 2)}`} tone="gold" foot={`${advances.length} advance(s)`} />
+        <StatCard title="Eggs Supplied" value={`GH₵ ${num(totalFulfilled, 2)}`} tone="green" foot="value delivered" />
+        <StatCard title="Still Owed" value={`GH₵ ${num(Math.max(0, totalOwed), 2)}`} tone={totalOwed > 0 ? 'rust' : 'green'} foot="eggs still to supply" />
+        <StatCard title="Pending" value={pending.length + partial.length} foot={`${fulfilled.length} fulfilled`} />
+      </div>
+
+      {(pending.length > 0 || partial.length > 0) && (
+        <div className="alert-banner" style={{ background: 'rgba(212,165,55,0.12)', border: '1px solid rgba(212,165,55,0.35)', borderRadius: 7, padding: '9px 14px', marginBottom: 14, fontSize: 13, color: '#D4A537' }}>
+          🥚 You owe eggs worth <strong>GH₵ {num(Math.max(0, totalOwed), 2)}</strong> to {pending.length + partial.length} buyer(s) who paid in advance.
+        </div>
+      )}
+
+      <PeriodFilter
+        period={period} onPeriod={setPeriod}
+        customStart={customStart} customEnd={customEnd}
+        onCustomStart={setCS} onCustomEnd={setCE}
+      />
+
+      {visible.length === 0 ? (
+        <p className="empty" style={{ padding: '18px 0' }}>
+          {advances.length === 0
+            ? 'No advances recorded yet. When a buyer pays upfront for eggs, record it here to track what you owe them.'
+            : 'No advances in this period.'}
+        </p>
+      ) : (
+        <div className="table-wrap">
+          <table className="data">
+            <thead>
+              <tr>
+                <th>Date</th>
+                <th>Buyer</th>
+                <th>Amount Paid (GH₵)</th>
+                <th>Value Supplied (GH₵)</th>
+                <th>Status</th>
+                <th>Notes</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {visible.map((r) => {
+                const status = r.status || 'pending';
+                return (
+                  <tr key={r.id}>
+                    <td className="mono">{fmtDate(r.date)}</td>
+                    <td><strong>{r.buyer || '—'}</strong></td>
+                    <td className="mono">GH₵ {num(r.amount, 2)}</td>
+                    <td className="mono">{r.fulfilledAmount > 0 ? `GH₵ ${num(r.fulfilledAmount, 2)}` : '—'}</td>
+                    <td>
+                      <span style={{ fontSize: 12, fontWeight: 600, color: statusColor(status) }}>
+                        {statusLabel(r)}
+                      </span>
+                    </td>
+                    <td className="notes">{r.notes || ''}</td>
+                    <td style={{ whiteSpace: 'nowrap' }}>
+                      {status !== 'fulfilled' && (
+                        <button className="link-btn gold" style={{ marginRight: 8 }}
+                          onClick={() => setFulfillModal(r)}>
+                          Supply eggs
+                        </button>
+                      )}
+                      {status === 'fulfilled' && (
+                        <button className="link-btn" style={{ marginRight: 8, fontSize: 11, color: '#888' }}
+                          onClick={() => onUpdate(r.id, { status: 'pending', fulfilledAmount: 0 })}>
+                          Reopen
+                        </button>
+                      )}
+                      <button className="link-btn rust" onClick={async () => {
+                        if (await askConfirm('Delete this advance record?')) onDelete(r.id);
+                      }}>Delete</button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Add advance modal */}
+      {modal === 'add' && (
+        <BuyerAdvanceForm
+          onClose={() => setModal(null)}
+          onSave={(entry) => { onAdd(entry); setModal(null); }}
+        />
+      )}
+
+      {/* Supply eggs (fulfil) modal */}
+      {fulfillModal && (
+        <FulfilAdvanceModal
+          advance={fulfillModal}
+          onClose={() => setFulfillModal(null)}
+          onSave={(fulfilledAmount) => {
+            const total = Number(fulfillModal.amount) || 0;
+            const newFulfilled = (Number(fulfillModal.fulfilledAmount) || 0) + fulfilledAmount;
+            const newStatus = newFulfilled >= total - 0.01 ? 'fulfilled' : 'partial';
+            onUpdate(fulfillModal.id, { fulfilledAmount: newFulfilled, status: newStatus });
+            setFulfillModal(null);
+          }}
+        />
+      )}
+    </>
+  );
+}
+
+function BuyerAdvanceForm({ onClose, onSave }) {
+  const [f, setF] = useState({ date: todayISO(), buyer: '', amount: '', notes: '' });
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  function submit() {
+    if (!f.date || !f.amount || !f.buyer) return;
+    onSave({
+      id: newId(),
+      date: f.date,
+      buyer: f.buyer,
+      amount: Number(f.amount),
+      notes: f.notes || null,
+      status: 'pending',
+      fulfilledAmount: 0,
+    });
+  }
+  return (
+    <Modal title="Record buyer advance" sub="Money paid upfront before eggs are delivered." onClose={onClose}>
+      <div className="form-grid">
+        <Field label="Date"><input type="date" value={f.date} onChange={set('date')} /></Field>
+        <Field label="Buyer name"><input value={f.buyer} onChange={set('buyer')} placeholder="e.g. Madam Ama" /></Field>
+        <Field label="Amount paid (GH₵)"><input type="number" step="0.01" min="0" value={f.amount} onChange={set('amount')} placeholder="0.00" /></Field>
+        <Field label="Notes"><textarea rows={2} value={f.notes} onChange={set('notes')} placeholder="e.g. 10 crates at GH₵ 30, delivery next week" /></Field>
+      </div>
+      <div style={{ display: 'flex', gap: 10, marginTop: 12, justifyContent: 'flex-end' }}>
+        <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+        <button className="btn btn-gold" onClick={submit} disabled={!f.date || !f.amount || !f.buyer}>Save advance</button>
+      </div>
+    </Modal>
+  );
+}
+
+function FulfilAdvanceModal({ advance, onClose, onSave }) {
+  const [amount, setAmount] = useState('');
+  const remaining = (Number(advance.amount) || 0) - (Number(advance.fulfilledAmount) || 0);
+  return (
+    <Modal
+      title="Supply eggs against advance"
+      sub={`${advance.buyer} paid GH₵ ${num(advance.amount, 2)} upfront. GH₵ ${num(remaining, 2)} still outstanding.`}
+      onClose={onClose}
+    >
+      <div className="form-grid">
+        <Field label="Value of eggs supplied now (GH₵)">
+          <input type="number" step="0.01" min="0" max={remaining} value={amount} onChange={(e) => setAmount(e.target.value)} placeholder={`up to ${num(remaining, 2)}`} autoFocus />
+        </Field>
+      </div>
+      <p style={{ fontSize: 12, color: '#aaa', margin: '6px 0 12px' }}>
+        Enter the GH₵ value of eggs you're delivering now. If this clears the balance, the advance is marked fulfilled.
+      </p>
+      <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+        <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+        <button className="btn btn-gold" onClick={() => { if (amount) onSave(Number(amount)); }} disabled={!amount || Number(amount) <= 0}>
+          Record supply
+        </button>
+      </div>
+    </Modal>
+  );
+}
 
 function SalesTab({ sales, flock, totalRevenue, flockMargin, totalFeedCost, litterCost, coopCharge, coopInvested, flockRunning, flockPettyCost, feedRecords, litterRecords, allPettyCosts, allFlockExpenses, onAdd, onEditFlock, onInvoice, onUpdateSale, onLogPayment }) {
   const setup = Number(flock.setupCost) || 0;
