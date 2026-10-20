@@ -3217,6 +3217,7 @@ function AppInner({ profileId, profileName, farmName, onSwitchProfile }) {
           onAdd={addBuyerAdvance}
           onUpdate={updateBuyerAdvance}
           onDelete={deleteBuyerAdvance}
+          onAddSale={addSale}
         />
       )}
 
@@ -7214,7 +7215,7 @@ function LogPaymentModal({ sale, saleAmount, buyerName, onClose, onLogPayment, o
    status ('pending'|'fulfilled'|'partial'),
    fulfilledAmount (eggs supplied so far value)
    ───────────────────────────────────────────── */
-function BuyerAdvancesTab({ advances, onAdd, onUpdate, onDelete }) {
+function BuyerAdvancesTab({ advances, onAdd, onUpdate, onDelete, onAddSale }) {
   const [modal, setModal] = useState(null); // null | 'add' | advance record (for edit)
   const [period, setPeriod] = useState('all');
   const [customStart, setCS] = useState('');
@@ -7348,11 +7349,31 @@ function BuyerAdvancesTab({ advances, onAdd, onUpdate, onDelete }) {
         <FulfilAdvanceModal
           advance={fulfillModal}
           onClose={() => setFulfillModal(null)}
-          onSave={(fulfilledAmount) => {
+          onSave={({ deliveryDate, item, quantity, unitPrice, amount: deliveredAmount, notes }) => {
+            // 1. Update the advance record
             const total = Number(fulfillModal.amount) || 0;
-            const newFulfilled = (Number(fulfillModal.fulfilledAmount) || 0) + fulfilledAmount;
+            const newFulfilled = (Number(fulfillModal.fulfilledAmount) || 0) + deliveredAmount;
             const newStatus = newFulfilled >= total - 0.01 ? 'fulfilled' : 'partial';
             onUpdate(fulfillModal.id, { fulfilledAmount: newFulfilled, status: newStatus });
+            // 2. Auto-create a matching sale entry (paid via advance — already cash in hand)
+            if (onAddSale) {
+              onAddSale({
+                id: newId(),
+                date: deliveryDate,
+                item,
+                quantity: quantity || null,
+                unitPrice: unitPrice || null,
+                amount: deliveredAmount,
+                buyer: fulfillModal.buyer,
+                notes: notes || `Advance delivery — ref: ${fmtDate(fulfillModal.date)}`,
+                cashAmount: deliveredAmount,
+                momoAmount: 0,
+                creditAmount: 0,
+                paymentStatus: 'paid',
+                payments: [],
+                fromAdvance: fulfillModal.id,
+              });
+            }
             setFulfillModal(null);
           }}
         />
@@ -7393,26 +7414,65 @@ function BuyerAdvanceForm({ onClose, onSave }) {
 }
 
 function FulfilAdvanceModal({ advance, onClose, onSave }) {
-  const [amount, setAmount] = useState('');
   const remaining = (Number(advance.amount) || 0) - (Number(advance.fulfilledAmount) || 0);
+  const [f, setF] = useState({
+    deliveryDate: todayISO(),
+    item: 'Eggs (crates)',
+    quantity: '',
+    unitPrice: '',
+    amount: '',
+    notes: '',
+  });
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  const autoAmount = (Number(f.quantity) || 0) * (Number(f.unitPrice) || 0);
+  const deliveredAmount = f.amount !== '' ? Number(f.amount) : autoAmount;
+  const overLimit = deliveredAmount > remaining + 0.01;
+  const canSave = deliveredAmount > 0 && !overLimit && f.deliveryDate;
+
   return (
     <Modal
       title="Supply eggs against advance"
-      sub={`${advance.buyer} paid GH₵ ${num(advance.amount, 2)} upfront. GH₵ ${num(remaining, 2)} still outstanding.`}
+      sub={`${advance.buyer} · GH₵ ${num(remaining, 2)} still to be covered`}
       onClose={onClose}
     >
       <div className="form-grid">
-        <Field label="Value of eggs supplied now (GH₵)">
-          <input type="number" step="0.01" min="0" max={remaining} value={amount} onChange={(e) => setAmount(e.target.value)} placeholder={`up to ${num(remaining, 2)}`} autoFocus />
+        <Field label="Delivery date">
+          <input type="date" value={f.deliveryDate} onChange={set('deliveryDate')} />
+        </Field>
+        <Field label="Item">
+          <select value={f.item} onChange={set('item')}>
+            <option>Eggs (crates)</option>
+            <option>Eggs (pieces)</option>
+          </select>
+        </Field>
+        <Field label="Quantity">
+          <input type="number" step="0.01" min="0" value={f.quantity} onChange={set('quantity')} placeholder={f.item === 'Eggs (crates)' ? 'crates' : 'pieces'} />
+        </Field>
+        <Field label="Unit price (GH₵)">
+          <input type="number" step="0.01" min="0" value={f.unitPrice} onChange={set('unitPrice')} placeholder="per crate / piece" />
+        </Field>
+        <Field label="Total value delivered (GH₵)">
+          <input type="number" step="0.01" min="0" value={f.amount} onChange={set('amount')}
+            placeholder={autoAmount ? `auto ${num(autoAmount, 2)}` : `up to ${num(remaining, 2)}`} />
+        </Field>
+        <Field label="Notes (optional)">
+          <input value={f.notes} onChange={set('notes')} placeholder="e.g. partial delivery" />
         </Field>
       </div>
-      <p style={{ fontSize: 12, color: '#aaa', margin: '6px 0 12px' }}>
-        Enter the GH₵ value of eggs you're delivering now. If this clears the balance, the advance is marked fulfilled.
+      {deliveredAmount > 0 && (
+        <p style={{ fontSize: 12, color: overLimit ? '#e05c5c' : '#aaa', margin: '4px 0 10px' }}>
+          {overLimit
+            ? `⚠️ GH₵ ${num(deliveredAmount, 2)} exceeds the remaining balance of GH₵ ${num(remaining, 2)}.`
+            : `Delivering GH₵ ${num(deliveredAmount, 2)} — ${num(remaining - deliveredAmount, 2) <= 0.01 ? 'this clears the advance ✓' : `GH₵ ${num(remaining - deliveredAmount, 2)} will remain outstanding`}.`}
+        </p>
+      )}
+      <p style={{ fontSize: 11, color: '#888', margin: '0 0 12px' }}>
+        A matching sale record will be created automatically in Sales &amp; Profit.
       </p>
       <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
         <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
-        <button className="btn btn-gold" onClick={() => { if (amount) onSave(Number(amount)); }} disabled={!amount || Number(amount) <= 0}>
-          Record supply
+        <button className="btn btn-gold" onClick={() => canSave && onSave({ ...f, amount: deliveredAmount })} disabled={!canSave}>
+          Record delivery
         </button>
       </div>
     </Modal>
