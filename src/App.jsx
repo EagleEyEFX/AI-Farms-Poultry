@@ -1884,7 +1884,17 @@ function AppInner({ profileId, profileName, farmName, onSwitchProfile }) {
     setData((d) => touch({ ...d, sales: (d.sales || []).map((r) => (r.id === id ? { ...r, ...patch } : r)) }));
   }
   function addSalePayment(saleId, payment) {
-    setData((d) => touch({ ...d, sales: (d.sales || []).map((r) => r.id === saleId ? { ...r, payments: [...(r.payments || []), payment] } : r) }));
+    setData((d) => touch({
+      ...d,
+      sales: (d.sales || []).map((r) => {
+        if (r.id !== saleId) return r;
+        // Reduce creditAmount live as payments come in
+        const paidNow = Number(payment.amount) || 0;
+        const prevCredit = Number(r.creditAmount) || 0;
+        const newCredit = Math.max(0, prevCredit - paidNow);
+        return { ...r, payments: [...(r.payments || []), payment], creditAmount: newCredit };
+      }),
+    }));
   }
   /* ── Buyer advances (egg deposits) ── */
   function addBuyerAdvance(entry) {
@@ -7479,12 +7489,145 @@ function FulfilAdvanceModal({ advance, onClose, onSave }) {
   );
 }
 
+/* ── Credit Summary helpers ── */
+function buildCreditSummary(sales) {
+  let totalCash = 0, totalMomo = 0, totalCreditGiven = 0, totalCreditCollected = 0;
+  (sales || []).forEach((r) => {
+    const amt = Number(r.amount) || 0;
+    totalCash  += Number(r.cashAmount)  || 0;
+    totalMomo  += Number(r.momoAmount)  || 0;
+    // Original credit given = cashAmount + momoAmount + creditAmount should = amount
+    // Credit given for this sale = amount - cash - momo (i.e. portion on credit at time of sale)
+    const origCredit = amt - (Number(r.cashAmount) || 0) - (Number(r.momoAmount) || 0);
+    if (origCredit > 0 && (r.paymentStatus === 'credit' || (Number(r.creditAmount) > 0) || (r.payments || []).length > 0)) {
+      totalCreditGiven += origCredit;
+      const collected = (r.payments || []).reduce((s, p) => s + (Number(p.amount) || 0), 0);
+      totalCreditCollected += Math.min(collected, origCredit);
+    }
+  });
+  const totalCreditOutstanding = Math.max(0, totalCreditGiven - totalCreditCollected);
+  return { totalCash, totalMomo, totalCreditGiven, totalCreditCollected, totalCreditOutstanding };
+}
+
+/** Quick-glance card shown at top of Sales & Profit */
+function CreditSummaryCard({ sales }) {
+  const { totalCash, totalMomo, totalCreditGiven, totalCreditCollected, totalCreditOutstanding } = buildCreditSummary(sales);
+  if (totalCash + totalMomo + totalCreditGiven === 0) return null;
+  const tiles = [
+    { label: '💵 Cash', val: totalCash, color: '#6abf6a' },
+    { label: '📱 MoMo', val: totalMomo, color: '#D4A537' },
+    { label: '📋 Credit Given', val: totalCreditGiven, color: '#9b8ec4' },
+    { label: '✅ Collected', val: totalCreditCollected, color: '#6abf6a' },
+    { label: '⚠️ Outstanding', val: totalCreditOutstanding, color: totalCreditOutstanding > 0 ? '#e05c5c' : '#6abf6a' },
+  ];
+  return (
+    <div style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid #333', borderRadius: 10, padding: '12px 14px', marginBottom: 14 }}>
+      <div style={{ fontSize: 11, color: '#888', marginBottom: 8, textTransform: 'uppercase', letterSpacing: 1 }}>Payment Summary</div>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        {tiles.map(({ label, val, color }) => (
+          <div key={label} style={{ flex: 1, minWidth: 100, background: 'rgba(255,255,255,0.03)', border: `1px solid ${color}33`, borderRadius: 8, padding: '8px 10px' }}>
+            <div style={{ fontSize: 10, color: '#777', marginBottom: 2 }}>{label}</div>
+            <div style={{ fontWeight: 700, fontSize: 13, color }}>{`GH₵ ${num(val, 2)}`}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** Full credit summary sub-tab with period filter and per-buyer breakdown */
+function CreditSummarySubTab({ sales }) {
+  const [period, setPeriod] = useState('all');
+  const [customStart, setCustomStart] = useState('');
+  const [customEnd, setCustomEnd] = useState('');
+
+  const filtered = filterByPeriod(sales || [], period, customStart, customEnd);
+  const { totalCash, totalMomo, totalCreditGiven, totalCreditCollected, totalCreditOutstanding } = buildCreditSummary(filtered);
+
+  // Per-buyer credit breakdown
+  const buyerMap = {};
+  filtered.forEach((r) => {
+    const amt = Number(r.amount) || 0;
+    const origCredit = amt - (Number(r.cashAmount) || 0) - (Number(r.momoAmount) || 0);
+    if (origCredit <= 0) return;
+    const buyer = r.buyer || 'Unknown buyer';
+    if (!buyerMap[buyer]) buyerMap[buyer] = { given: 0, collected: 0 };
+    buyerMap[buyer].given += origCredit;
+    const collected = (r.payments || []).reduce((s, p) => s + (Number(p.amount) || 0), 0);
+    buyerMap[buyer].collected += Math.min(collected, origCredit);
+  });
+  const buyerRows = Object.entries(buyerMap).sort((a, b) => (b[1].given - b[1].collected) - (a[1].given - a[1].collected));
+
+  const statTile = (label, val, color, sub) => (
+    <div style={{ flex: 1, minWidth: 130, background: 'rgba(255,255,255,0.04)', border: `1px solid ${color}44`, borderRadius: 10, padding: '12px 14px' }}>
+      <div style={{ fontSize: 11, color: '#888', marginBottom: 4 }}>{label}</div>
+      <div style={{ fontWeight: 700, fontSize: 18, color }}>{`GH₵ ${num(val, 2)}`}</div>
+      {sub && <div style={{ fontSize: 10, color: '#555', marginTop: 2 }}>{sub}</div>}
+    </div>
+  );
+
+  return (
+    <div>
+      <PeriodFilter period={period} onPeriod={setPeriod} customStart={customStart} customEnd={customEnd} onCustomStart={setCustomStart} onCustomEnd={setCustomEnd} />
+
+      {/* Top stats */}
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 18 }}>
+        {statTile('💵 Cash Received', totalCash, '#6abf6a')}
+        {statTile('📱 MoMo Received', totalMomo, '#D4A537')}
+      </div>
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 18 }}>
+        {statTile('📋 Total Credit Given', totalCreditGiven, '#9b8ec4', 'All credit ever extended (paid + unpaid)')}
+        {statTile('✅ Credit Collected', totalCreditCollected, '#6abf6a', 'Payments received on credit sales')}
+        {statTile('⚠️ Credit Outstanding', totalCreditOutstanding, totalCreditOutstanding > 0 ? '#e05c5c' : '#6abf6a', 'Still owed to you')}
+      </div>
+
+      {/* Per-buyer credit breakdown */}
+      {buyerRows.length > 0 && (
+        <>
+          <div style={{ fontSize: 12, color: '#888', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 8 }}>Credit by Buyer</div>
+          <div style={{ overflowX: 'auto' }}>
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Buyer</th>
+                  <th>Credit Given</th>
+                  <th>Collected</th>
+                  <th>Outstanding</th>
+                </tr>
+              </thead>
+              <tbody>
+                {buyerRows.map(([buyer, { given, collected }]) => {
+                  const outstanding = Math.max(0, given - collected);
+                  return (
+                    <tr key={buyer}>
+                      <td>{buyer}</td>
+                      <td>GH₵ {num(given, 2)}</td>
+                      <td style={{ color: '#6abf6a' }}>GH₵ {num(collected, 2)}</td>
+                      <td style={{ color: outstanding > 0 ? '#e05c5c' : '#6abf6a', fontWeight: outstanding > 0 ? 700 : 400 }}>
+                        {outstanding > 0 ? `GH₵ ${num(outstanding, 2)}` : '✓ Cleared'}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+      {buyerRows.length === 0 && (
+        <p style={{ color: '#555', fontSize: 13, textAlign: 'center', marginTop: 24 }}>No credit sales in this period.</p>
+      )}
+    </div>
+  );
+}
+
 function SalesTab({ sales, flock, totalRevenue, flockMargin, totalFeedCost, litterCost, coopCharge, coopInvested, flockRunning, flockPettyCost, feedRecords, litterRecords, allPettyCosts, allFlockExpenses, onAdd, onEditFlock, onInvoice, onUpdateSale, onLogPayment }) {
   const setup = Number(flock.setupCost) || 0;
   const [payModal, setPayModal] = useState(null);
   const [period, setPeriod] = useState('all');
   const [customStart, setCustomStart] = useState('');
   const [customEnd, setCustomEnd] = useState('');
+  const [salesSubTab, setSalesSubTab] = useState('list');
 
   // Period-filtered sales
   const visibleSales = filterByPeriod(sales, period, customStart, customEnd);
@@ -7523,6 +7666,33 @@ function SalesTab({ sales, flock, totalRevenue, flockMargin, totalFeedCost, litt
         <button className="btn btn-gold" onClick={onAdd}>+ Log sale</button>
       </div>
 
+      {/* ── Credit quick-glance card — always visible ── */}
+      <CreditSummaryCard sales={sales} />
+
+      {/* ── Sub-tab switcher ── */}
+      <div style={{ display: 'flex', gap: 6, margin: '10px 0 4px' }}>
+        {['list', 'summary'].map((t) => (
+          <button
+            key={t}
+            onClick={() => setSalesSubTab(t)}
+            style={{
+              padding: '5px 16px', borderRadius: 6, fontSize: 13, fontWeight: 600,
+              border: '1px solid',
+              borderColor: salesSubTab === t ? '#D4A537' : 'rgba(255,255,255,0.12)',
+              background: salesSubTab === t ? 'rgba(212,165,55,0.15)' : 'transparent',
+              color: salesSubTab === t ? '#D4A537' : '#aaa',
+              cursor: 'pointer', transition: 'all .15s',
+            }}
+          >
+            {t === 'list' ? 'Sales List' : 'Credit Summary'}
+          </button>
+        ))}
+      </div>
+
+      {/* ── Credit Summary sub-tab ── */}
+      {salesSubTab === 'summary' && <CreditSummarySubTab sales={sales} />}
+
+      {salesSubTab === 'list' && <>
       {/* ── Period selector at the top so KPIs respond to it ── */}
       <PeriodFilter
         period={period} onPeriod={setPeriod}
@@ -7606,6 +7776,7 @@ function SalesTab({ sales, flock, totalRevenue, flockMargin, totalFeedCost, litt
           </tbody>
         </table>
       </div>
+      </>}
 
       {payModal && (
         <LogPaymentModal
